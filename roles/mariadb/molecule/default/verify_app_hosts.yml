@@ -1,0 +1,146 @@
+# Checks after side_effect.yml: the planted insecure accounts and the test database are gone, the
+# server listens on the instance's own address only, the application account works over TCP with
+# its privileges and root does not, port 3306 is in the firewall drop-in and in the loaded
+# ruleset for the application hosts only, and the dump timer is off.
+- name: Verify the setup for application hosts
+  hosts: all
+  gather_facts: true
+  vars:
+    mariadb_test_root_sql: [mariadb, --batch, --skip-column-names, --execute]
+    mariadb_test_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+  tasks:
+    - name: Read the accounts, the databases, the test privileges and the bind address
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + [item] }}"
+      register: mariadb_test_state
+      changed_when: false
+      loop:
+        - SELECT CONCAT(User, '@', Host) FROM mysql.user ORDER BY 1
+        - SHOW DATABASES
+        - SELECT COUNT(*) FROM mysql.db WHERE Db IN ('test', 'test\\_%')
+        - SELECT @@bind_address
+
+    - name: Check that the planted accounts, the test database and its privileges are gone
+      vars:
+        results: "{{ mariadb_test_state.results | map(attribute='stdout_lines') | list }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            results[0] == ['mariadb.sys@localhost', 'molecule@localhost', 'molecule_app@' ~ mariadb_test_address,
+            'mysql@localhost', 'root@localhost']
+          - "'test' not in results[1]"
+          - results[2] == ['0']
+          - results[3] == [mariadb_test_address]
+
+    - name: Read the listening sockets
+      ansible.builtin.command: ss --listening --numeric --processes --no-header --tcp
+      register: mariadb_test_sockets
+      changed_when: false
+
+    - name: Check that the server listens on the instance's address only
+      vars:
+        server_lines: "{{ mariadb_test_sockets.stdout_lines | select('search', '\"mariadbd\"') | map('split') | list }}"
+      ansible.builtin.assert:
+        that:
+          - server_lines | map(attribute=3) | unique | list == [mariadb_test_address ~ ':3306']
+
+    - name: Log in over TCP as the application account, as root with the planted password, and write as the application
+      ansible.builtin.command:
+        argv: >-
+          {{ ['mariadb', '--batch', '--skip-column-names', '--protocol=TCP', '--host=' ~ mariadb_test_address,
+              '--user=' ~ item.user, '--execute', item.sql] }}
+      environment:
+        MYSQL_PWD: "{{ item.password }}"
+      register: mariadb_test_logins
+      changed_when: false
+      failed_when: false
+      loop:
+        - user: molecule_app
+          password: "{{ mariadb_test_app_password }}"
+          sql: SELECT note FROM molecule.dump_check WHERE id = 1
+        - user: root
+          password: "{{ mariadb_test_root_password }}"
+          sql: SELECT 1
+        - user: molecule_app
+          password: "{{ mariadb_test_app_password }}"
+          sql: INSERT INTO molecule.dump_check VALUES (2, 'molecule-denied')
+      loop_control:
+        label: "{{ item.user }}: {{ item.sql }}"
+
+    - name: Check the application account (read only) and that root over TCP is refused
+      vars:
+        results: "{{ mariadb_test_logins.results }}"
+      ansible.builtin.assert:
+        that:
+          - results[0].rc == 0
+          - results[0].stdout_lines == ['molecule-dump-row']
+          - results[1].rc != 0
+          - results[1].stderr is search('Access denied for user .root.@|is not allowed to connect')
+          - results[2].rc != 0
+          - results[2].stderr is search('INSERT command denied to user .molecule_app.@')
+
+    # Firewall drop-in in the layout of the base role (side_effect.yml sets mariadb_firewall_manage,
+    # so the role created the directory)
+    - name: Read the drop-in directory and file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: mariadb_test_dropin_stat
+      loop:
+        - /etc/nftables.d
+        - /etc/nftables.d/30-mariadb.nft
+
+    - name: Read the firewall drop-in
+      ansible.builtin.slurp:
+        src: /etc/nftables.d/30-mariadb.nft
+      register: mariadb_test_dropin
+
+    - name: Check that the drop-in only accepts port 3306 from the application hosts
+      vars:
+        stats: "{{ mariadb_test_dropin_stat.results | map(attribute='stat') | list }}"
+        rule_end: tcp dport 3306 accept comment "mariadb app hosts"
+      ansible.builtin.assert:
+        that:
+          - stats[0].isdir and stats[0].mode == '0755' and stats[0].pw_name == 'root'
+          - stats[1].isreg and stats[1].mode == '0644' and stats[1].pw_name == 'root'
+          - >-
+            (mariadb_test_dropin.content | b64decode).splitlines() | reject('match', '^(#|$)') | list
+            == ['add rule inet filter input ip saddr { ' ~ mariadb_test_address ~ '/32, 198.51.100.0/24 } ' ~ rule_end,
+                'add rule inet filter input ip6 saddr { 2001:db8::/32 } ' ~ rule_end]
+
+    - name: Check the whole ruleset with nft
+      ansible.builtin.command: nft --check --file /etc/nftables.conf
+      changed_when: false
+
+    # The role restarted the running nftables, so the loaded ruleset has the rules.
+    - name: Read the loaded input chain
+      ansible.builtin.command: nft list chain inet filter input
+      register: mariadb_test_chain
+      changed_when: false
+
+    - name: Check that the loaded ruleset accepts port 3306 from the application hosts and keeps the drop policy
+      vars:
+        rule_end: tcp dport 3306 accept comment "mariadb app hosts"
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_chain.stdout is search('policy drop;')
+          - mariadb_test_chain.stdout is search('ip saddr \{ [0-9.]+, 198\.51\.100\.0/24 \} ' ~ rule_end)
+          - mariadb_test_chain.stdout is search('ip6 saddr 2001:db8::/32 ' ~ rule_end)
+
+    # Dumps switched off: the timer stops, the files stay
+    - name: Read the timer and the dump service
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      register: mariadb_test_dump_units
+      loop:
+        - mariadb-dump.timer
+        - mariadb-dump.service
+
+    - name: Check that the timer is disabled and stopped and the service is still there
+      vars:
+        timer: "{{ mariadb_test_dump_units.results[0].status }}"
+        service: "{{ mariadb_test_dump_units.results[1].status }}"
+      ansible.builtin.assert:
+        that:
+          - timer['UnitFileState'] == 'disabled'
+          - timer['ActiveState'] == 'inactive'
+          - service['LoadState'] == 'loaded'

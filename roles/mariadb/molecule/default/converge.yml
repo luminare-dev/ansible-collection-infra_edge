@@ -1,0 +1,11 @@
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    # Defaults otherwise: bind 127.0.0.1, dumps at 03:15 kept for 2 days, no application hosts,
+    # mariadb_firewall_manage false (prepare.yml left /etc/nftables.d out).
+    - name: Apply luminare.infra_edge.mariadb
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.mariadb
+      vars:
+        mariadb_databases: "{{ mariadb_test_databases }}"

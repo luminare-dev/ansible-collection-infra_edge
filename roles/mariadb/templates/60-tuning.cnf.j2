@@ -1,0 +1,24 @@
+# {{ ansible_managed }} (luminare.infra_edge.mariadb)
+# Read after the package's 50-server.cnf, so these values win. The server reads them at start-up;
+# the role restarts it after a change.
+
+[mariadbd]
+# Network: the server listens on this address only (the socket {{ mariadb_socket }} always works).
+bind-address = {{ mariadb_bind_address }}
+max_connections = {{ mariadb_max_connections }}
+
+# Character set{{ ' and collation' if mariadb_collation_server else '' }} of new databases and tables.
+character-set-server = {{ mariadb_character_set_server }}
+{% if mariadb_collation_server %}
+collation-server = {{ mariadb_collation_server }}
+{% endif %}
+
+# InnoDB memory and redo log
+innodb_buffer_pool_size = {{ mariadb_innodb_buffer_pool_size }}
+innodb_log_file_size = {{ mariadb_innodb_log_file_size }}
+
+# Slow query log: statements that run longer than long_query_time seconds. The log holds the
+# statements' text; the package's logrotate rule rotates /var/log/mysql/*.log.
+slow_query_log = {{ 1 if mariadb_slow_query_log else 0 }}
+slow_query_log_file = {{ mariadb_slow_query_log_file }}
+long_query_time = {{ mariadb_long_query_time }}

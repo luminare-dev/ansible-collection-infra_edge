@@ -129,6 +129,53 @@ the host (for example at the hosting provider) can also block it.
 base role before the nginx role (or set `nginx_firewall_manage: true`), correct
 `nginx_firewall_sources`, and run the playbook again.
 
+## The mariadb role stops with "Every item of mariadb_databases needs a name"
+
+**Cause:** an item of `mariadb_databases` breaks a rule that the role checks before it changes
+anything: the database name has a character other than letters, digits and `_`, or is `test`,
+`mysql` or another system database; `user` and `password` are not given together; the user is
+`root`, `mysql` or `mariadb.sys`; or the same user and host appear twice. The message lists the
+databases and accounts it read, never a password.
+
+**Fix:** correct the item, for example with `_` instead of `-` or `.` in a database name.
+
+## The mariadb role stops with "mariadb_bind_address must be one IPv4 or IPv6 address of this host"
+
+**Cause:** the address is not one of the host's addresses (the server would not start on it), or
+it is written with a port or a prefix length. The message lists the addresses the host has.
+
+**Fix:** use one address from the list exactly as written there, `127.0.0.1` (the default), or
+`0.0.0.0` for every IPv4 address (then limit the access with `mariadb_allowed_app_hosts` and the
+base firewall).
+
+## The mariadb role fails at "Remove the anonymous accounts" with "unable to connect to database"
+
+The message of the failed task contains `Access denied for user 'root'@'localhost'`.
+
+**Cause:** root no longer logs in with `unix_socket`, for example because someone set a root
+password with `ALTER USER` or chose one in `mysql_secure_installation`. The role logs in as root
+over the socket without a password.
+
+**Fix:** on the host, log in with that password and give root its `unix_socket` login back, then
+run the playbook again:
+
+```bash
+mariadb -u root -p -e "ALTER USER root@localhost IDENTIFIED VIA unix_socket"
+```
+
+## Application hosts cannot reach the database
+
+**Cause:** the server listens on `127.0.0.1` (the default `mariadb_bind_address`), the base
+firewall has no rule for the client (`mariadb_allowed_app_hosts` empty, or `/etc/nftables.d` did
+not exist when the role ran and `mariadb_firewall_manage` is false), or the account's `host` does
+not match the client's address (`Access denied for user 'app'@'192.0.2.13'`).
+
+**Fix:** check the listener with `ss -tlnp | grep mariadbd`, the rule with
+`cat /etc/nftables.d/30-mariadb.nft` and `nft list chain inet filter input`, and the accounts with
+`mariadb -e "SELECT User, Host FROM mysql.user"`. Set `mariadb_bind_address`,
+`mariadb_allowed_app_hosts` and the account's `host` together (see
+[Application hosts](../roles/mariadb/README.md#application-hosts)) and run the playbook again.
+
 ## The role 'devsec.hardening.ssh_hardening' was not found
 
 ```text
@@ -136,12 +183,13 @@ base role before the nginx role (or set `nginx_firewall_manage: true`), correct
 ```
 
 **Cause:** the collection was installed with `--no-deps` or from a copy, so its dependencies
-(`devsec.hardening`, `community.general`, `ansible.posix`) are missing.
+(`devsec.hardening`, `community.general`, `ansible.posix`, `ansible.mariadb`) are missing. The
+same applies to `couldn't resolve module/action 'ansible.mariadb.mariadb_user'`.
 
 **Fix:** install them, or install the collection again without `--no-deps`.
 
 ```bash
-ansible-galaxy collection install "devsec.hardening:>=11.0.0,<12.0.0" "community.general:>=13.0.0,<14.0.0" "ansible.posix:>=2.2.0,<3.0.0"
+ansible-galaxy collection install "devsec.hardening:>=11.0.0,<12.0.0" "community.general:>=13.0.0,<14.0.0" "ansible.posix:>=2.2.0,<3.0.0" "ansible.mariadb:>=6.0.0,<7.0.0"
 ```
 
 ## Molecule: docker command not found in PATH

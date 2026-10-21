@@ -1,0 +1,51 @@
+# Test fixture: the firewall layout of luminare.infra_edge.base (docs/adr/0009) without its SSH
+# rules: /etc/nftables.conf with input policy drop and the include of /etc/nftables.d/*.nft as its
+# last line, loaded by nftables.service in the instance's own network namespace. The directory
+# /etc/nftables.d is not created here: converge.yml keeps the default mariadb_firewall_manage
+# (false), so the role must leave the firewall alone; side_effect.yml sets it to true, so the role
+# must create the directory, write its drop-in, check it with nft and restart the running nftables.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+
+    - name: Write a ruleset in the layout of the base role
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        mode: "0755"
+        content: |
+          #!/usr/sbin/nft -f
+          # Molecule only (roles/mariadb/molecule/default/prepare.yml): the layout of the base role.
+          flush ruleset
+
+          table inet filter {
+            chain input {
+              type filter hook input priority filter; policy drop;
+              iif "lo" accept
+              ct state established,related accept
+              ct state invalid drop
+              meta l4proto icmp accept
+              meta l4proto ipv6-icmp accept
+            }
+
+            chain forward {
+              type filter hook forward priority filter; policy drop;
+            }
+
+            chain output {
+              type filter hook output priority filter; policy accept;
+            }
+          }
+
+          include "/etc/nftables.d/*.nft"
+
+    - name: Load the ruleset
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        enabled: true
+        state: started

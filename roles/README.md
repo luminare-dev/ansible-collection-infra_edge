@@ -23,3 +23,4 @@ Each role of the collection lives in its own folder here and is used by its full
 | `luminare.infra_edge.base` | [base/README.md](base/README.md) |
 | `luminare.infra_edge.cloudflared` | [cloudflared/README.md](cloudflared/README.md) |
 | `luminare.infra_edge.nginx` | [nginx/README.md](nginx/README.md) |
+| `luminare.infra_edge.mariadb` | [mariadb/README.md](mariadb/README.md) |

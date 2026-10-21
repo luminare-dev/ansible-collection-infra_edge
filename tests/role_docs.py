@@ -44,7 +44,8 @@ def load_options(role: str) -> dict:
 
 
 def _code(text: str) -> str:
-    return f"`{text}`"
+    # A "|" ends a table cell even inside a code span; GitHub shows "\|" there as "|".
+    return "`" + text.replace("|", "\\|") + "`"
 
 
 def render_type(spec: dict) -> str:

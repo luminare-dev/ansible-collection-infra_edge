@@ -107,6 +107,38 @@ module. Each item of `nginx_sites` needs `name`, `server_name` and `upstream`; `
 | `nginx_firewall_sources` | list of str | `["0.0.0.0/0", "::/0"]` | Source networks that may reach the relay ports (IPv4 and IPv6 CIDRs). 0.0.0.0/0 and ::/0 together mean everyone. An empty list writes no accept rule. |
 <!-- argument-specs:nginx:end -->
 
+## mariadb
+
+[`luminare.infra_edge.mariadb`](../roles/mariadb/README.md) runs the distribution's MariaDB server:
+root on `unix_socket` login without a password, anonymous accounts, the test database and remote
+root accounts removed, a tuning file (bind address `127.0.0.1` by default, character set, InnoDB
+sizes, connections, slow query log), the databases and accounts of `mariadb_databases`, nightly
+zstd dumps per database into `/var/backups/mariadb` with a retention in days, and optionally port
+3306 for application hosts in the firewall drop-in directory of the base role. An item of
+`mariadb_databases` with a `user` also needs its `password` (from Ansible Vault or SOPS).
+
+<!-- argument-specs:mariadb:begin -->
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `mariadb_packages` | list of str | `["mariadb-server", "python3-pymysql", "zstd"]` | Packages to install: the server (MariaDB 11.8 on Debian 13, 10.11 on Ubuntu 24.04), the Python driver that the ansible.mariadb modules need on the host, and zstd for the dumps. Add packages, do not remove these. |
+| `mariadb_bind_address` | str | `127.0.0.1` | The one IPv4 or IPv6 address the server listens on (port 3306). The default keeps it on the host; set a private address for application hosts and list them in mariadb_allowed_app_hosts. The socket /run/mysqld/mysqld.sock always works. |
+| `mariadb_databases` | list of dict | `[]` | Databases and their accounts. Keys: name (database; letters, digits and _), user and password (optional account; both or neither), host (where the account may connect from, default localhost, the socket) and priv (privileges in the ansible.mariadb.mariadb_user format, default all privileges on its own database, for example app.*:ALL for the database app). A changed password or priv is applied on the next run. Databases and accounts that leave the list are not dropped. |
+| `mariadb_innodb_buffer_pool_ratio` | float | `0.25` | Share of the host's memory for the InnoDB buffer pool, used by the default of mariadb_innodb_buffer_pool_size (0.25 when the host also runs applications; 0.5 to 0.7 on a host for the database only; at most 0.9). |
+| `mariadb_innodb_buffer_pool_size` | str | `{{ (ansible_facts['memtotal_mb'] * mariadb_innodb_buffer_pool_ratio) \| int }}M` | Size of the InnoDB buffer pool (a number with K, M or G). The default is the host's memory times mariadb_innodb_buffer_pool_ratio. |
+| `mariadb_innodb_log_file_size` | str | `256M` | Size of the InnoDB redo log (a number with K, M or G). |
+| `mariadb_max_connections` | int | `100` | Most client connections at the same time. |
+| `mariadb_character_set_server` | str | `utf8mb4` | Character set of new databases and tables. |
+| `mariadb_collation_server` | str | `""` | Collation of new databases and tables. Empty keeps the package's utf8mb4 collation (utf8mb4_uca1400_ai_ci on Debian 13, utf8mb4_general_ci on Ubuntu 24.04); another character set needs a collation of that set here. |
+| `mariadb_slow_query_log` | bool | `true` | Log statements that run longer than mariadb_long_query_time to /var/log/mysql/mariadb-slow.log (the statements' text; rotated by the package's logrotate rule). |
+| `mariadb_long_query_time` | float | `1` | Seconds after which a statement counts as slow. |
+| `mariadb_dump_enabled` | bool | `true` | Run the dump timer. False stops and disables it; the script and the service stay, so a dump can still be started by hand, and existing dumps are kept. |
+| `mariadb_dump_dir` | str | `/var/backups/mariadb` | Folder of the dumps (owner root, mode 0700). Every file in it that ends in .sql.zst counts as a dump for the retention. |
+| `mariadb_dump_oncalendar` | str | `*-*-* 03:15:00` | When the dumps run (systemd OnCalendar expression, local time of the host). A run missed while the host was off follows at the next boot. |
+| `mariadb_dump_retention_days` | int | `2` | Days a dump is kept. After a successful run, dumps older than this are deleted; a failed run deletes nothing. |
+| `mariadb_allowed_app_hosts` | list of str | `[]` | IPv4 and IPv6 addresses or CIDRs of the application hosts that may reach port 3306 through the firewall of the base role (never /0). The server must also listen on an address they reach (mariadb_bind_address), and their accounts need a matching host. |
+| `mariadb_firewall_manage` | bool | `false` | false writes /etc/nftables.d/30-mariadb.nft only when /etc/nftables.d exists (the firewall of the base role); true also creates the directory (nftables and /etc/nftables.conf must exist). The file holds accept rules for port 3306 from mariadb_allowed_app_hosts and is removed when the list is empty; a running nftables is restarted after a change. |
+<!-- argument-specs:mariadb:end -->
+
 ## Secrets
 
 Secrets never go into this repository, an issue or a log. A role takes a secret only as a

@@ -1,0 +1,11 @@
+# {{ ansible_managed }} (luminare.infra_edge.mariadb)
+# Port {{ mariadb_port }} for the application hosts in mariadb_allowed_app_hosts. Included by
+# /etc/nftables.conf after table inet filter (input policy drop): accept rules only.
+{% set v4 = mariadb_allowed_app_hosts | reject('search', ':') | list %}
+{% set v6 = mariadb_allowed_app_hosts | select('search', ':') | list %}
+{% if v4 | length > 0 %}
+add rule inet filter input ip saddr { {{ v4 | join(', ') }} } tcp dport {{ mariadb_port }} accept comment "mariadb app hosts"
+{% endif %}
+{% if v6 | length > 0 %}
+add rule inet filter input ip6 saddr { {{ v6 | join(', ') }} } tcp dport {{ mariadb_port }} accept comment "mariadb app hosts"
+{% endif %}

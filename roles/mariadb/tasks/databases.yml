@@ -1,0 +1,28 @@
+# Databases and accounts from mariadb_databases. The role creates and updates them; it never
+# drops a database or an account that left the list (that would delete data). Every task that
+# sees a password has no_log, so neither the value nor the item reaches the output.
+
+- name: Create the databases
+  ansible.mariadb.mariadb_db:
+    name: "{{ item }}"
+    state: present
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+  loop: "{{ mariadb_databases | map(attribute='name') | unique | list }}"
+
+# The password is set when it differs from the stored hash, so a changed value in the inventory
+# rotates it; priv replaces all privileges of the account (default: everything on its database).
+- name: Create the accounts and set their passwords and privileges
+  ansible.mariadb.mariadb_user:
+    name: "{{ item.user }}"
+    host: "{{ item.host | default('localhost', true) }}"
+    password: "{{ item.password }}"
+    update_password: always
+    priv: "{{ item.priv | default(item.name ~ '.*:ALL', true) }}"
+    state: present
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+  loop: "{{ mariadb_databases | selectattr('user', 'defined') | selectattr('user') | list }}"
+  no_log: true
