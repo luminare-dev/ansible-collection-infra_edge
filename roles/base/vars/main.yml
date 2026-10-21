@@ -1,0 +1,32 @@
+# Internal values of luminare.infra_edge.base (not meant to be overridden).
+
+# Supported managed hosts: distribution -> major version.
+base_supported_platforms:
+  Debian: ["13"]
+  Ubuntu: ["24"]
+
+# The security archive of each distribution, used when base_unattended_upgrades_origins is empty.
+base_security_origins:
+  Debian:
+    - origin=Debian,codename=${distro_codename}-security,label=Debian-Security
+  Ubuntu:
+    - origin=Ubuntu,archive=${distro_codename}-security,label=Ubuntu
+
+# A host name per RFC 1123: dot-separated labels of 1 to 63 letters, digits and hyphens that do
+# not start or end with a hyphen. tasks/assert.yml also limits the whole name to 64 characters
+# (the Linux limit) and refuses an all-numeric last label, which rules out IPv4 addresses.
+base_hostname_label: '[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+base_hostname_pattern: '^{{ base_hostname_label }}(\.{{ base_hostname_label }})*$'
+
+# Packages every host gets. timedatectl and hostnamectl need D-Bus.
+base_packages:
+  - apt-listchanges
+  - ca-certificates
+  - dbus
+  - locales
+  - sudo
+  - tzdata
+  - unattended-upgrades
+
+# The firewall drop-in directory that other roles write <NN>-<role>.nft files into.
+base_firewall_dropin_dir: /etc/nftables.d

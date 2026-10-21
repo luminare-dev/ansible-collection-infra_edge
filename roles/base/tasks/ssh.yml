@@ -1,0 +1,19 @@
+# The SSH server is hardened by devsec.hardening.ssh_hardening (docs/adr/0008). It owns
+# /etc/ssh/sshd_config and validates it with "sshd -T" before it is written. The values below are
+# role parameters, so inventory variables cannot weaken them; every other ssh_* or sshd_* variable
+# of that role can still be set in the inventory (for example ssh_allow_tcp_forwarding).
+
+- name: Harden the SSH server with devsec.hardening.ssh_hardening
+  ansible.builtin.include_role:
+    name: devsec.hardening.ssh_hardening
+  vars:
+    ssh_server_ports:
+      - "{{ base_ssh_port | string }}"
+    ssh_listen_to: "{{ base_ssh_listen_addresses }}"
+    ssh_permit_root_login: "no"
+    ssh_server_password_login: false
+    ssh_challengeresponseauthentication: false
+    sshd_authenticationmethods: publickey
+    ssh_pubkey_authentication: true
+    ssh_allow_groups: "{{ base_ssh_group }}"
+    ssh_max_auth_retries: "{{ base_sshd_max_auth_tries }}"

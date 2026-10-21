@@ -1,0 +1,64 @@
+# Checks that need more than the types in meta/argument_specs.yml. They run before any change,
+# because a wrong value here can lock everyone out of the host.
+
+- name: Gather the facts the role needs
+  ansible.builtin.setup:
+    gather_subset: [min]
+  when: ansible_facts['distribution'] is not defined
+
+- name: Check that the host runs a supported distribution
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in base_supported_platforms
+      - ansible_facts['distribution_major_version'] in base_supported_platforms[ansible_facts['distribution']]
+    fail_msg: >-
+      luminare.infra_edge.base supports Debian 13 and Ubuntu 24.04; this host runs
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Check that both users get at least one SSH key
+  ansible.builtin.assert:
+    that:
+      - base_admin_ssh_keys | length > 0
+      - base_automation_ssh_keys | length > 0
+      - base_admin_user != base_automation_user
+    fail_msg: >-
+      Set base_admin_ssh_keys and base_automation_ssh_keys (public keys) and use two different user
+      names: the SSH server accepts keys only, so a user without a key could not log in.
+    quiet: true
+
+- name: Check that the firewall admits SSH from somewhere
+  ansible.builtin.assert:
+    that:
+      - base_mgmt_cidrs | length > 0
+    fail_msg: >-
+      base_ssh_allow_mode is mgmt_cidrs, but base_mgmt_cidrs is empty: the firewall would refuse SSH
+      from every address. List the management networks, or set base_ssh_allow_mode to any or loopback.
+    quiet: true
+  when:
+    - base_firewall_enabled
+    - base_ssh_allow_mode == 'mgmt_cidrs'
+
+# The default is the inventory name, which may be an IP address or contain underscores; both
+# would end up in /etc/hosts or make hostnamectl fail.
+- name: Check that the host name is a valid host name and not an IP address
+  ansible.builtin.assert:
+    that:
+      - base_hostname | length <= 64
+      - base_hostname is match(base_hostname_pattern)
+      - base_hostname.split('.')[-1] is not match('^[0-9]+$')
+    fail_msg: >-
+      base_hostname '{{ base_hostname }}' is not a valid host name: use letters, digits and hyphens in
+      dot-separated labels (RFC 1123, at most 64 characters, no IP address). The default is the
+      inventory name; set base_hostname to a name, or to "" to leave the host name unchanged.
+    quiet: true
+  when: base_hostname | length > 0
+
+- name: Check the locale and reboot time settings
+  ansible.builtin.assert:
+    that:
+      - base_default_locale in base_locales
+      - base_unattended_reboot_time is match('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+    fail_msg: >-
+      base_default_locale must be one of base_locales, and base_unattended_reboot_time must be HH:MM.
+    quiet: true

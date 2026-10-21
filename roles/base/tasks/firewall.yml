@@ -1,0 +1,35 @@
+# nftables: base owns /etc/nftables.conf (input and forward policy drop, output accept). Its last
+# line includes /etc/nftables.d/*.nft, where other roles add "add rule inet filter input ... accept"
+# lines in <NN>-<role>.nft files (docs/adr/0009). The file is checked with "nft -c" before it is
+# written. Loading it is skipped in Molecule (tag molecule-notest): a container cannot prove kernel
+# firewall behaviour.
+
+- name: Remove ufw (two firewall managers would overwrite each other's rules)
+  ansible.builtin.apt:
+    name: ufw
+    state: absent
+
+- name: Create the firewall drop-in directory for other roles
+  ansible.builtin.file:
+    path: "{{ base_firewall_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable nftables and load the ruleset
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+    state: started
+  tags: [firewall, molecule-notest]

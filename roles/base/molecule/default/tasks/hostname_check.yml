@@ -1,0 +1,24 @@
+# Runs the input checks of the role (tasks/assert.yml) with base_hostname set to
+# base_test_hostname and records in base_test_hostname_results whether they accept the name, or
+# the name of the check that refused it. verify.yml includes this file once per name; nothing on
+# the instance changes.
+- name: Run the input checks with one host name
+  block:
+    - name: Run the input checks of the role with host name {{ base_test_hostname }}
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.base
+        tasks_from: assert.yml
+      vars:
+        base_hostname: "{{ base_test_hostname }}"
+        base_admin_ssh_keys: [ssh-ed25519 AAAA-verify-only]
+        base_automation_ssh_keys: [ssh-ed25519 AAAA-verify-only]
+        base_mgmt_cidrs: [192.0.2.0/24]
+
+    - name: Record that the checks accepted the name
+      ansible.builtin.set_fact:
+        base_test_hostname_results: "{{ base_test_hostname_results | combine({base_test_hostname: 'accepted'}) }}"
+  rescue:
+    - name: Record which check refused the name
+      ansible.builtin.set_fact:
+        base_test_hostname_results: >-
+          {{ base_test_hostname_results | combine({base_test_hostname: ansible_failed_task.name}) }}

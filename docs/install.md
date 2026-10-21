@@ -8,14 +8,19 @@ container, before any release existed: the install from a tag with git and the i
 `requirements.yml`, both against a local clone of the repository with a test tag `v0.1.0` (a
 `file://` URL in place of the GitHub URL), and `ansible-galaxy collection install` of a tarball
 built locally with `ansible-galaxy collection build`. `gh release download`, `sha256sum -c` and
-`gh attestation verify` were not run, because there is no release to download yet.
+`gh attestation verify` were not run, because there is no release to download yet. Repeated the
+same day for the version with the `base` role: both installs also pulled the dependencies from
+Ansible Galaxy (devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix 2.2.2 and the
+collections that devsec.hardening needs, community.crypto and community.mysql); one download
+failed once with a read timeout and passed when the command was run again.
 
 ## Requirements
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python on the control node | 3.12 or later | required by ansible-core 2.21 |
-| ansible-core | 2.21 | `requires_ansible: ">=2.21.0"` in `meta/runtime.yml` |
+| Python on the control node | 3.12 or later | required by ansible-core 2.20 and 2.21 |
+| ansible-core | 2.20 or later | `requires_ansible: ">=2.20.0"` in `meta/runtime.yml`; CI tests 2.21 |
+| Collections | devsec.hardening 11.x, community.general 13.x, ansible.posix 2.x | installed with the collection as its dependencies, from Ansible Galaxy |
 | git | any current version | only for the install from a tag |
 | Managed hosts | Debian 13, Ubuntu 24.04 | with Python 3 |
 

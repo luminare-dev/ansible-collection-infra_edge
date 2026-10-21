@@ -1,0 +1,196 @@
+# Input validation and documentation of luminare.infra_edge.base. Ansible checks these options
+# when the role starts. The variable tables in roles/base/README.md and docs/configuration.md are
+# generated from this file (python3 tests/role_docs.py --write), and a unit test keeps them equal.
+argument_specs:
+  main:
+    short_description: Base hardening for a Debian 13 or Ubuntu 24.04 edge host
+    description:
+      - Sets the time zone, locales and host name, enables unattended security upgrades,
+        creates an admin user and an automation user that may log in with SSH keys only,
+        hardens the SSH server through devsec.hardening.ssh_hardening, writes a default-drop
+        nftables firewall with a drop-in directory for other roles, configures fail2ban for SSH
+        and limits the systemd journal.
+    author:
+      - Luminare Development
+    options:
+      base_timezone:
+        type: str
+        default: Europe/Vienna
+        description: Time zone of the host, a name from the tz database.
+      base_locales:
+        type: list
+        elements: str
+        default:
+          - en_US.UTF-8
+        description: Locales to generate.
+      base_default_locale:
+        type: str
+        default: en_US.UTF-8
+        description: System-wide LANG in /etc/default/locale; must be one of base_locales.
+      base_hostname:
+        type: str
+        default: "{{ inventory_hostname }}"
+        description: >-
+          Host name to set, and to map to 127.0.1.1 in /etc/hosts. An empty string leaves both unchanged.
+          Must be a valid host name (RFC 1123: letters, digits and hyphens in dot-separated labels, at most
+          64 characters) and not an IP address; the role stops before any change otherwise. Set it, or set
+          it to "", when the inventory names hosts by IP address or with underscores.
+      base_manage_hosts_file:
+        type: bool
+        default: true
+        description: Keep a 127.0.1.1 line for base_hostname in /etc/hosts.
+      base_timesyncd_enabled:
+        type: bool
+        default: true
+        description: >-
+          Install systemd-timesyncd for time synchronisation. Set false on hosts that use chrony or ntpsec,
+          which the package would replace.
+      base_qemu_guest_agent:
+        type: bool
+        default: false
+        description: Install qemu-guest-agent (for virtual machines on a QEMU/KVM hypervisor).
+      base_unattended_upgrades_enabled:
+        type: bool
+        default: true
+        description: >-
+          Install security updates every day with unattended-upgrades. False keeps the package but turns the
+          daily run off.
+      base_unattended_upgrades_origins:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Origins-Pattern entries that unattended-upgrades may install from. Empty means the security archive
+          of the distribution only.
+      base_unattended_reboot:
+        type: bool
+        default: false
+        description: Reboot automatically when an update requires it.
+      base_unattended_reboot_time:
+        type: str
+        default: "04:30"
+        description: Time of day (HH:MM) for the automatic reboot when base_unattended_reboot is true.
+      base_admin_user:
+        type: str
+        default: admin
+        description: Name of the personal admin account. It may use sudo with its password.
+      base_admin_ssh_keys:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Public SSH keys of the admin user. Required (at least one), because password logins are off; the
+          list replaces all other keys of the user.
+      base_admin_password_hash:
+        type: str
+        default: ""
+        description: >-
+          SHA-512 crypt hash (openssl passwd -6) of the admin password, needed for sudo and the console. Empty
+          leaves the password unchanged; a new user then has a locked password. Keep the value in a vault.
+      base_automation_user:
+        type: str
+        default: ansible
+        description: Name of the account that Ansible and other automation log in with.
+      base_automation_ssh_keys:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Public SSH keys of the automation user. Required (at least one); the list replaces all other keys of
+          the user.
+      base_automation_sudo_nopasswd:
+        type: bool
+        default: true
+        description: >-
+          Let the automation user use sudo without a password. False makes sudo ask for the user's password,
+          which this role does not set (a new account keeps a locked password), so sudo stays unusable for it
+          until a password is set by other means.
+      base_ssh_group:
+        type: str
+        default: sshusers
+        description: >-
+          Group whose members may log in over SSH (AllowGroups). The admin and the automation user are added
+          to it; other roles add their own users.
+      base_ssh_hardening_enabled:
+        type: bool
+        default: true
+        description: >-
+          Harden the SSH server with devsec.hardening.ssh_hardening (key-only login, no root login,
+          AllowGroups, MaxAuthTries).
+      base_ssh_port:
+        type: int
+        default: 22
+        description: Port of the SSH server, used by the SSH server, the firewall rule and the fail2ban jail.
+      base_ssh_listen_addresses:
+        type: list
+        elements: str
+        default:
+          - 0.0.0.0
+          - "::"
+        description: >-
+          Addresses the SSH server listens on (ListenAddress). The default covers IPv4 and IPv6; an
+          address family the host does not have is skipped by the SSH server.
+      base_sshd_max_auth_tries:
+        type: int
+        default: 3
+        description: MaxAuthTries of the SSH server.
+      base_os_hardening_enabled:
+        type: bool
+        default: false
+        description: >-
+          Also apply devsec.hardening.os_hardening (sysctl, PAM, login.defs, file permissions). Opt-in; read
+          the role README first, it turns IP forwarding off.
+      base_firewall_enabled:
+        type: bool
+        default: true
+        description: >-
+          Write and load the nftables firewall (input and forward policy drop) with the drop-in directory
+          /etc/nftables.d. Removes ufw.
+      base_ssh_allow_mode:
+        type: str
+        default: mgmt_cidrs
+        choices:
+          - mgmt_cidrs
+          - loopback
+          - any
+        description: >-
+          Where the firewall accepts SSH from. mgmt_cidrs means only from base_mgmt_cidrs, loopback means no
+          SSH rule (only local or tunnelled access), any means from everywhere.
+      base_mgmt_cidrs:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          IPv4 and IPv6 networks (CIDR) of the management hosts. Required when base_ssh_allow_mode is
+          mgmt_cidrs; fail2ban never bans them.
+      base_fail2ban_enabled:
+        type: bool
+        default: true
+        description: >-
+          Install fail2ban with an SSH jail (systemd journal backend, nftables ban action). Also installs
+          nftables for the ban action when base_firewall_enabled is false; fail2ban then adds its own
+          nftables table and leaves the other rules of the host alone.
+      base_fail2ban_maxretry:
+        type: int
+        default: 5
+        description: Failed SSH logins within base_fail2ban_findtime that cause a ban.
+      base_fail2ban_findtime:
+        type: str
+        default: 10m
+        description: Time window for counting failed SSH logins (fail2ban time format).
+      base_fail2ban_bantime:
+        type: str
+        default: 1h
+        description: How long an address stays banned (fail2ban time format).
+      base_journald_persistent:
+        type: bool
+        default: true
+        description: Keep the journal on disk (Storage=persistent) instead of in memory.
+      base_journald_system_max_use:
+        type: str
+        default: 500M
+        description: Disk space limit of the journal (SystemMaxUse).
+      base_journald_max_retention:
+        type: str
+        default: 14day
+        description: Maximum age of journal entries (MaxRetentionSec).

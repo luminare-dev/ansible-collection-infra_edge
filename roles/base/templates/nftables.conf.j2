@@ -1,0 +1,43 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }} (luminare.infra_edge.base)
+# Input and forward drop everything that no rule accepts; output is open (the outbound tunnel
+# connects to port 7844 tcp/udp). Other roles add accept rules to the input chain in
+# {{ base_firewall_dropin_dir }}/<NN>-<role>.nft, included by the last line of this file.
+{% set mgmt_v4 = base_mgmt_cidrs | reject('search', ':') | list %}
+{% set mgmt_v6 = base_mgmt_cidrs | select('search', ':') | list %}
+
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept
+		ct state established,related accept
+		ct state invalid drop
+		meta l4proto icmp accept
+		meta l4proto ipv6-icmp accept
+		# DHCPv6 replies come from a link-local server address to the client port; the request went
+		# to a multicast address, so connection tracking does not count them as established.
+		ip6 saddr fe80::/10 udp dport 546 accept comment "dhcpv6 client"
+{% if base_ssh_allow_mode == 'any' %}
+		tcp dport {{ base_ssh_port }} accept comment "ssh"
+{% elif base_ssh_allow_mode == 'mgmt_cidrs' %}
+{%   if mgmt_v4 %}
+		ip saddr { {{ mgmt_v4 | join(', ') }} } tcp dport {{ base_ssh_port }} accept comment "ssh from management"
+{%   endif %}
+{%   if mgmt_v6 %}
+		ip6 saddr { {{ mgmt_v6 | join(', ') }} } tcp dport {{ base_ssh_port }} accept comment "ssh from management"
+{%   endif %}
+{% endif %}
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+
+include "{{ base_firewall_dropin_dir }}/*.nft"

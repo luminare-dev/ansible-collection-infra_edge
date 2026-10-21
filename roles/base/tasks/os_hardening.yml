@@ -1,0 +1,8 @@
+# Opt-in (base_os_hardening_enabled): devsec.hardening.os_hardening changes kernel parameters,
+# PAM, login.defs and file permissions. It is configured through its own os_* and sysctl_*
+# variables in the inventory. It is not part of the Molecule scenario, because sysctl values set
+# in a privileged container would change the kernel of the machine that runs the test.
+
+- name: Apply devsec.hardening.os_hardening
+  ansible.builtin.include_role:
+    name: devsec.hardening.os_hardening

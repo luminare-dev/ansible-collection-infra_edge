@@ -1,0 +1,23 @@
+// {{ ansible_managed }} (luminare.infra_edge.base)
+// Which updates unattended-upgrades installs. This file replaces the distribution's default,
+// so that only the origins below are allowed.
+
+Unattended-Upgrade::Origins-Pattern {
+{% for origin in (base_unattended_upgrades_origins or base_security_origins[ansible_facts['distribution']]) %}
+        "{{ origin }}";
+{% endfor %}
+};
+
+// Finish an interrupted dpkg run first, and keep the system clean.
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+
+// Reboot when an update requires it (/var/run/reboot-required).
+Unattended-Upgrade::Automatic-Reboot "{{ base_unattended_reboot | ternary('true', 'false') }}";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ base_unattended_reboot_time }}";
+
+Unattended-Upgrade::SyslogEnable "true";

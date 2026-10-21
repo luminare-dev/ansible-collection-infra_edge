@@ -1,0 +1,40 @@
+- name: Set the time zone
+  community.general.timezone:
+    name: "{{ base_timezone }}"
+
+- name: Generate the locales
+  community.general.locale_gen:
+    name: "{{ base_locales }}"
+    state: present
+
+- name: Set the system-wide default locale
+  ansible.builtin.lineinfile:
+    path: /etc/default/locale
+    regexp: '^LANG='
+    line: "LANG={{ base_default_locale }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set the host name
+  ansible.builtin.hostname:
+    name: "{{ base_hostname }}"
+    use: systemd
+  when: base_hostname | length > 0
+
+- name: Map the host name to 127.0.1.1 in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    line: >-
+      127.0.1.1 {{ base_hostname }}{{ (' ' ~ base_hostname.split('.')[0]) if '.' in base_hostname else '' }}
+    owner: root
+    group: root
+    mode: "0644"
+    # Container runtimes bind-mount /etc/hosts, where the atomic rename fails; Ansible then
+    # writes the file in place.
+    unsafe_writes: true
+  when:
+    - base_manage_hosts_file
+    - base_hostname | length > 0
