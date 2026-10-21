@@ -1,0 +1,38 @@
+# The token is written to a file that only the service user can read. It is never passed on a
+# command line (where ps and systemctl status show it to every local user) and never printed:
+# the task that writes it has no_log and no diff.
+
+- name: Create the service group
+  ansible.builtin.group:
+    name: "{{ cloudflared_user }}"
+    system: true
+    state: present
+
+- name: Create the service user (no home directory, no login shell)
+  ansible.builtin.user:
+    name: "{{ cloudflared_user }}"
+    group: "{{ cloudflared_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+    state: present
+
+- name: Create the configuration directory (root-owned, readable by the service group)
+  ansible.builtin.file:
+    path: "{{ cloudflared_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ cloudflared_user }}"
+    mode: "0750"
+
+- name: Write the tunnel token file
+  ansible.builtin.copy:
+    content: "{{ cloudflared_token }}"
+    dest: "{{ cloudflared_token_file }}"
+    owner: "{{ cloudflared_user }}"
+    group: "{{ cloudflared_user }}"
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Restart cloudflared

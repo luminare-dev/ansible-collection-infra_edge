@@ -19,3 +19,4 @@ Each role of the collection lives in its own folder here and is used by its full
 | Role | README |
 |---|---|
 | `luminare.infra_edge.base` | [base/README.md](base/README.md) |
+| `luminare.infra_edge.cloudflared` | [cloudflared/README.md](cloudflared/README.md) |

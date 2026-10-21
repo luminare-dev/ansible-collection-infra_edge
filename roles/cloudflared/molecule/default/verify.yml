@@ -1,0 +1,306 @@
+# Checks of the converged instance. Commands only read state; the sandbox rating works on a copy
+# of the unit file in a temporary directory. The connector runs in its own network namespace
+# (prepare.yml), so the listener checks enter that namespace with nsenter.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    cloudflared_test_version: "2026.10.2"
+    cloudflared_test_secret: "{{ 'molecule-only-secret' | b64encode }}"
+    cloudflared_test_exec_start: >-
+      ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --metrics 127.0.0.1:2000 --edge 127.0.0.1:7844
+      run --token-file /etc/cloudflared/token
+  tasks:
+    # Package, apt pin and repository
+    - name: Read the cloudflared version
+      ansible.builtin.command: cloudflared --version
+      register: cloudflared_test_binary
+      changed_when: false
+
+    - name: Read the apt policy of cloudflared
+      ansible.builtin.command: apt-cache policy cloudflared
+      register: cloudflared_test_policy
+      changed_when: false
+
+    # Without the pin, apt would upgrade to the newer version that the repository index lists.
+    - name: Ask apt (check mode) whether it would upgrade cloudflared to the newest version
+      ansible.builtin.apt:
+        name: cloudflared
+        state: latest  # noqa: package-latest
+      check_mode: true
+      register: cloudflared_test_latest
+
+    - name: Check the version, the pin and the repository
+      vars:
+        policy: "{{ cloudflared_test_policy.stdout_lines | map('trim') | list }}"
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_binary.stdout.startswith('cloudflared version ' ~ cloudflared_test_version ~ ' ')
+          - "('Installed: ' ~ cloudflared_test_version) in policy"
+          - "('Candidate: ' ~ cloudflared_test_version) in policy"
+          # The pinned version has priority 1001; the repository index is listed with 500.
+          - policy | select('match', '^[*]{3} ' ~ cloudflared_test_version ~ ' 1001$') | list | length == 1
+          - policy | select('search', '500 https://pkg.cloudflare.com/cloudflared any/main') | list | length > 0
+          - not cloudflared_test_latest.changed
+
+    - name: Read the apt files of the role
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: cloudflared_test_apt_files
+      loop:
+        - /etc/apt/preferences.d/cloudflared
+        - /etc/apt/sources.list.d/cloudflared.list
+
+    - name: Check the pin file and the apt source
+      ansible.builtin.assert:
+        that:
+          - >-
+            ['Package: cloudflared', 'Pin: version ' ~ cloudflared_test_version, 'Pin-Priority: 1001']
+            == ((cloudflared_test_apt_files.results[0].content | b64decode).splitlines()
+                | reject('match', '^Explanation:') | list)
+          - >-
+            'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main'
+            in (cloudflared_test_apt_files.results[1].content | b64decode).splitlines()
+
+    - name: Read the download directory
+      ansible.builtin.stat:
+        path: /var/cache/luminare-cloudflared
+      register: cloudflared_test_download_dir
+
+    - name: Check that the package file was removed after the install
+      ansible.builtin.assert:
+        that:
+          - not cloudflared_test_download_dir.stat.exists
+
+    # Service user, configuration directory and token file
+    - name: Read the service user
+      ansible.builtin.getent:
+        database: passwd
+        key: cloudflared
+
+    - name: Check the service user (system account, no home directory, no login shell)
+      vars:
+        entry: "{{ ansible_facts.getent_passwd['cloudflared'] }}"
+      ansible.builtin.assert:
+        that:
+          - entry[1] | int < 1000
+          - entry[4] == '/nonexistent'
+          - entry[5] == '/usr/sbin/nologin'
+
+    - name: Read the configuration directory and the token file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: cloudflared_test_paths
+      loop:
+        - /etc/cloudflared
+        - /etc/cloudflared/token
+
+    - name: Check owner and mode (directory root:cloudflared 0750, token cloudflared 0600)
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_paths.results[0].stat.isdir
+          - cloudflared_test_paths.results[0].stat.pw_name == 'root'
+          - cloudflared_test_paths.results[0].stat.gr_name == 'cloudflared'
+          - cloudflared_test_paths.results[0].stat.mode == '0750'
+          - cloudflared_test_paths.results[1].stat.isreg
+          - cloudflared_test_paths.results[1].stat.pw_name == 'cloudflared'
+          - cloudflared_test_paths.results[1].stat.gr_name == 'cloudflared'
+          - cloudflared_test_paths.results[1].stat.mode == '0600'
+
+    - name: Read the token file
+      ansible.builtin.slurp:
+        src: /etc/cloudflared/token
+      register: cloudflared_test_token_file
+      no_log: true
+
+    - name: Check that the token file holds exactly the token
+      ansible.builtin.assert:
+        that:
+          - (cloudflared_test_token_file.content | b64decode) == cloudflared_test_token
+        quiet: true
+      no_log: true
+
+    # Unit file and takeover of "cloudflared service install"
+    - name: Read the unit file
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/cloudflared.service
+      register: cloudflared_test_unit
+
+    - name: Check the unit (token file, service user, metrics address, sandbox)
+      vars:
+        unit_lines: "{{ (cloudflared_test_unit.content | b64decode).splitlines() }}"
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_exec_start in unit_lines
+          - unit_lines | select('match', '^ExecStart=') | list | length == 1
+          - "'Type=notify' in unit_lines"
+          - "'User=cloudflared' in unit_lines"
+          - "'Group=cloudflared' in unit_lines"
+          - "'NoNewPrivileges=yes' in unit_lines"
+          - "'CapabilityBoundingSet=' in unit_lines"
+          - "'ProtectSystem=strict' in unit_lines"
+          - "'ProtectHome=yes' in unit_lines"
+          - "'PrivateTmp=yes' in unit_lines"
+          - "'PrivateDevices=yes' in unit_lines"
+          - "'SystemCallFilter=@system-service' in unit_lines"
+          - "'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' in unit_lines"
+
+    - name: Check the unit file with systemd
+      ansible.builtin.command: systemd-analyze verify /etc/systemd/system/cloudflared.service
+      changed_when: false
+
+    # systemd rates the sandbox from 0 (best) to 10. The unit file alone (copied under another
+    # name, so the Molecule drop-in does not apply) must stay at 1.5 or better.
+    - name: Rate the sandbox of the unit file without the Molecule drop-in
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          dir=$(mktemp -d)
+          trap 'rm -rf "$dir"' EXIT
+          cp /etc/systemd/system/cloudflared.service "$dir/cloudflared-sandbox-check.service"
+          systemd-analyze security --offline=true --threshold=15 --no-pager "$dir/cloudflared-sandbox-check.service"
+        executable: /bin/bash
+      register: cloudflared_test_exposure
+      changed_when: false
+
+    - name: Show the rating
+      ansible.builtin.debug:
+        msg: "{{ cloudflared_test_exposure.stdout_lines | select('search', 'Overall exposure level') | list }}"
+
+    - name: Read the unit as systemd loaded it, and the command line of the service
+      ansible.builtin.command: "{{ item }}"
+      register: cloudflared_test_loaded_unit
+      changed_when: false
+      loop:
+        - systemctl cat cloudflared.service
+        - systemctl show cloudflared.service --property=ExecStart
+
+    - name: Check that neither shows a token (also not the one of the replaced unit)
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_token not in item.stdout
+          - cloudflared_test_secret not in item.stdout
+          - "'molecule-old-token-on-the-command-line' not in item.stdout"
+          - "'--token ' not in item.stdout"
+          - "'--token-file /etc/cloudflared/token' in item.stdout"
+        quiet: true
+      loop: "{{ cloudflared_test_loaded_unit.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read the self-update units of the installer
+      ansible.builtin.stat:
+        path: /etc/systemd/system/{{ item }}
+      register: cloudflared_test_autoupdate
+      loop:
+        - cloudflared-update.timer
+        - cloudflared-update.service
+
+    - name: Ask systemd for the self-update timer
+      ansible.builtin.systemd_service:
+        name: cloudflared-update.timer
+      register: cloudflared_test_timer
+
+    - name: Check that the self-update units are gone
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_autoupdate.results | selectattr('stat.exists') | list | length == 0
+          - cloudflared_test_timer.status.LoadState == 'not-found'
+          - cloudflared_test_timer.status.ActiveState == 'inactive'
+
+    # The running service
+    - name: Read the state of the service
+      ansible.builtin.systemd_service:
+        name: cloudflared.service
+      register: cloudflared_test_service
+
+    - name: Check that it is enabled, running and has not restarted
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_service.status.UnitFileState == 'enabled'
+          - cloudflared_test_service.status.ActiveState == 'active'
+          - cloudflared_test_service.status.SubState == 'running'
+          - cloudflared_test_service.status.NRestarts == '0'
+          - cloudflared_test_service.status.User == 'cloudflared'
+          - cloudflared_test_service.status.PrivateNetwork == 'yes'
+
+    - name: Read the user and the command line of the main process
+      ansible.builtin.command: ps -o user:32=,args= -p {{ cloudflared_test_service.status.MainPID }}
+      register: cloudflared_test_process
+      changed_when: false
+
+    - name: Check that the process runs as cloudflared and its command line has no token
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_process.stdout.split()[0] == 'cloudflared'
+          - "'--token-file /etc/cloudflared/token' in cloudflared_test_process.stdout"
+          - cloudflared_test_token not in cloudflared_test_process.stdout
+          - "'--token ' not in cloudflared_test_process.stdout"
+        quiet: true
+
+    - name: Wait for the metrics listener in the network namespace of the service
+      ansible.builtin.command: >-
+        nsenter --target {{ cloudflared_test_service.status.MainPID }} --net ss --tcp --listening --numeric --no-header
+      register: cloudflared_test_listeners
+      changed_when: false
+      until: cloudflared_test_listeners.stdout_lines | length > 0
+      retries: 15
+      delay: 2
+
+    - name: Check that the only TCP listener is the metrics listener on 127.0.0.1:2000
+      vars:
+        local_addresses: "{{ cloudflared_test_listeners.stdout_lines | map('split') | map(attribute=3) | list }}"
+      ansible.builtin.assert:
+        that:
+          - local_addresses == ['127.0.0.1:2000']
+
+    - name: Fetch /metrics and /ready from the listener
+      ansible.builtin.command:
+        argv:
+          - nsenter
+          - --target
+          - "{{ cloudflared_test_service.status.MainPID }}"
+          - --net
+          - python3
+          - -c
+          - |
+            import sys, urllib.error, urllib.request
+            try:
+                response = urllib.request.urlopen("http://127.0.0.1:2000" + sys.argv[1], timeout=10)
+            except urllib.error.HTTPError as error:
+                response = error
+            print(response.status)
+            print(response.read().decode())
+          - "{{ item }}"
+      register: cloudflared_test_http
+      changed_when: false
+      loop:
+        - /metrics
+        - /ready
+
+    # /ready answers 503 with no connections: the tunnel never reached an edge.
+    - name: Check the metrics (version) and the readiness (no connection to the edge)
+      ansible.builtin.assert:
+        that:
+          - cloudflared_test_http.results[0].stdout_lines[0] == '200'
+          - >-
+            cloudflared_test_http.results[0].stdout
+            is search('build_info[{][^}]*version="' ~ cloudflared_test_version ~ '"')
+          - cloudflared_test_http.results[1].stdout_lines[0] == '503'
+          - (cloudflared_test_http.results[1].stdout_lines[1] | from_json).readyConnections == 0
+
+    - name: Read the log of the service
+      ansible.builtin.command: journalctl --unit cloudflared.service --no-pager --output cat
+      register: cloudflared_test_journal
+      changed_when: false
+
+    # The tunnel ID of the synthetic token in the log shows that the service user could read and
+    # parse the token file under the sandbox.
+    - name: Check that the service read the token file and that the log has no token
+      ansible.builtin.assert:
+        that:
+          - "'tunnelID=00000000-0000-0000-0000-000000000000' in cloudflared_test_journal.stdout"
+          - "'Starting metrics server on 127.0.0.1:2000/metrics' in cloudflared_test_journal.stdout"
+          - cloudflared_test_token not in cloudflared_test_journal.stdout
+          - cloudflared_test_secret not in cloudflared_test_journal.stdout
+        quiet: true

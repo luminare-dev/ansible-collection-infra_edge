@@ -1,0 +1,45 @@
+# Checks that need more than the types in meta/argument_specs.yml. They run before any change.
+# None of them prints the token: an assert reports the failed condition, not the values.
+
+- name: Gather the facts the role needs
+  ansible.builtin.setup:
+    gather_subset: [min]
+  when: ansible_facts['distribution'] is not defined or ansible_facts['architecture'] is not defined
+
+- name: Check that the host runs a supported distribution and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in cloudflared_supported_platforms
+      - ansible_facts['distribution_major_version'] in cloudflared_supported_platforms[ansible_facts['distribution']]
+      - ansible_facts['architecture'] in cloudflared_deb_architectures
+      - cloudflared_deb_architectures[ansible_facts['architecture']] in cloudflared_deb_sha256
+    fail_msg: >-
+      luminare.infra_edge.cloudflared supports Debian 13 and Ubuntu 24.04 on x86_64 and aarch64, with
+      a checksum in cloudflared_deb_sha256 for the architecture; this host runs
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} on
+      {{ ansible_facts['architecture'] }}.
+    quiet: true
+
+- name: Check that the token of a remotely managed tunnel is set
+  ansible.builtin.assert:
+    that:
+      - cloudflared_token | length > 0
+      - cloudflared_token is match('^eyJ[A-Za-z0-9+/_-]+={0,2}$')
+    fail_msg: >-
+      Set cloudflared_token to the token of a remotely managed tunnel, for example with
+      "export TUNNEL_TOKEN=..." on the control node. A tunnel token is base64-encoded JSON and starts
+      with "eyJ"; a tunnel ID or an API token does not work here.
+    quiet: true
+
+- name: Check the metrics address and the extra options
+  ansible.builtin.assert:
+    that:
+      - cloudflared_metrics_address is match('^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$')
+      - cloudflared_metrics_address | regex_replace(':[0-9]+$', '') not in ['0.0.0.0', '[::]']
+      - cloudflared_extra_args | reject('match', cloudflared_extra_arg_pattern) | list | length == 0
+      - cloudflared_extra_args | select('match', '^--?(token|metrics)') | list | length == 0
+    fail_msg: >-
+      cloudflared_metrics_address must be host:port with a single address (127.0.0.1:2000 by
+      default, never 0.0.0.0 or [::]), and cloudflared_extra_args may contain only letters, digits
+      and . _ : / = @ , + - and no --token or --metrics option.
+    quiet: true

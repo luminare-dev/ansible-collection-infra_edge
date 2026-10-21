@@ -1,0 +1,90 @@
+# cloudflared comes from Cloudflare's apt repository, whose index lists only the newest version,
+# so "apt-get install cloudflared=<version>" fails as soon as a newer one is out. The role
+# therefore installs the package file of the pinned version from the repository's pool, checks
+# its SHA-256 against cloudflared_deb_sha256, and an apt pin keeps apt from replacing it
+# (docs/adr/0011).
+
+- name: Pin the cloudflared version for apt
+  ansible.builtin.template:
+    src: apt-preferences.j2
+    dest: "{{ cloudflared_apt_preferences_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update the apt cache
+
+# The key and the source go to the paths of Cloudflare's own instructions, so a source that
+# cloud-init or an operator added that way is replaced instead of duplicated.
+- name: Add Cloudflare's apt repository
+  when: cloudflared_apt_repository_enabled
+  block:
+    # force: the key is fetched on every run but only replaced when its content changed.
+    - name: Download the signing key of the repository
+      ansible.builtin.get_url:
+        url: "{{ cloudflared_apt_key_url }}"
+        dest: "{{ cloudflared_apt_keyring }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: true
+      notify: Update the apt cache
+
+    - name: Add the repository as an apt source
+      ansible.builtin.copy:
+        content: |
+          deb [signed-by={{ cloudflared_apt_keyring }}] {{ cloudflared_repository_url }} any main
+        dest: "{{ cloudflared_apt_source_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Update the apt cache
+
+- name: Read the installed cloudflared version
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat=${db:Status-Status} ${Version}
+      - cloudflared
+  register: cloudflared_installed
+  changed_when: false
+  failed_when: cloudflared_installed.rc not in [0, 1]
+  check_mode: false
+
+- name: Install the pinned version from its package file
+  when: cloudflared_installed.stdout != 'installed ' ~ cloudflared_version
+  vars:
+    cloudflared_deb_architecture: "{{ cloudflared_deb_architectures[ansible_facts['architecture']] }}"
+    cloudflared_deb_file: cloudflared_{{ cloudflared_version }}_{{ cloudflared_deb_architecture }}.deb
+  block:
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: "{{ cloudflared_download_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Download the package file and check its SHA-256
+      ansible.builtin.get_url:
+        url: "{{ cloudflared_repository_url }}/pool/main/c/cloudflared/{{ cloudflared_deb_file }}"
+        dest: "{{ cloudflared_download_dir }}/{{ cloudflared_deb_file }}"
+        checksum: sha256:{{ cloudflared_deb_sha256[cloudflared_deb_architecture] }}
+        owner: root
+        group: root
+        mode: "0644"
+
+    # allow_downgrade: a newer version (for example from the repository) is replaced by the pin.
+    # In check mode the file is not downloaded, so there is nothing to install.
+    - name: Install the package file
+      ansible.builtin.apt:
+        deb: "{{ cloudflared_download_dir }}/{{ cloudflared_deb_file }}"
+        allow_downgrade: true
+      when: not ansible_check_mode
+      notify: Restart cloudflared
+
+  always:
+    - name: Remove the download directory
+      ansible.builtin.file:
+        path: "{{ cloudflared_download_dir }}"
+        state: absent

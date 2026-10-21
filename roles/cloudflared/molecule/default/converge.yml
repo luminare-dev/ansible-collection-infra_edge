@@ -1,0 +1,15 @@
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Apply luminare.infra_edge.cloudflared
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.cloudflared
+      vars:
+        # The synthetic token from molecule.yml (no account, no tunnel).
+        cloudflared_token: "{{ cloudflared_test_token }}"
+        # An edge address on the loopback interface: in the network namespace of prepare.yml,
+        # cloudflared keeps retrying it instead of looking up Cloudflare's edge and exiting.
+        cloudflared_extra_args:
+          - --edge
+          - 127.0.0.1:7844

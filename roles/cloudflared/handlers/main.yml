@@ -1,0 +1,14 @@
+# Only "apt-cache policy" and the next apt run read the new index; the package itself is
+# installed from its checked package file.
+- name: Update the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+
+# A restart waits for the tunnel's first connection (Type=notify) and fails when there is none
+# within TimeoutStartSec, so a wrong token or a blocked outbound port 7844 fails the play.
+- name: Restart cloudflared
+  ansible.builtin.systemd_service:
+    name: cloudflared.service
+    state: restarted
+    daemon_reload: true
+  when: cloudflared_service_enabled

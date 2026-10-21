@@ -1,0 +1,19 @@
+# luminare.infra_edge.cloudflared: the order matters. The checks run before any change, and the
+# package, the service user and the token file exist before the unit that uses them is written
+# and started.
+
+- name: Check the inputs before changing anything
+  ansible.builtin.import_tasks: assert.yml
+  tags: [cloudflared, always]
+
+- name: Install the pinned cloudflared package
+  ansible.builtin.import_tasks: package.yml
+  tags: [cloudflared, cloudflared_package]
+
+- name: Write the tunnel token for the service user
+  ansible.builtin.import_tasks: token.yml
+  tags: [cloudflared, cloudflared_token]
+
+- name: Run the connector as a hardened service
+  ansible.builtin.import_tasks: service.yml
+  tags: [cloudflared, cloudflared_service]

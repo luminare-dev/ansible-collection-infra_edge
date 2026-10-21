@@ -1,0 +1,22 @@
+# Defaults of luminare.infra_edge.cloudflared. Every variable is described, with its type, in
+# meta/argument_specs.yml; the tables in README.md and docs/configuration.md are generated from it.
+
+# Package: the version and the SHA-256 of its package file per architecture change together
+# (checksums from the "SHA256 Checksums" list of the GitHub release, files
+# cloudflared-linux-<arch>.deb; README.md "Upgrading cloudflared").
+cloudflared_version: "2026.10.2"
+cloudflared_deb_sha256:
+  amd64: 30a9a127c24ea8365fa8e11b13684128f34dd8a1137599aa00b4bebda1a0a083
+  arm64: 2e5335ea0ef2fa98e5354357e77aaf453f3756d1f9023cf5b063409e1fb3baca
+cloudflared_repository_url: https://pkg.cloudflare.com/cloudflared
+cloudflared_apt_repository_enabled: true
+cloudflared_apt_key_url: https://pkg.cloudflare.com/cloudflare-main.gpg
+
+# Tunnel: the token of a remotely managed tunnel, read from the environment of the control node
+cloudflared_token: "{{ lookup('ansible.builtin.env', 'TUNNEL_TOKEN') }}"
+
+# Service
+cloudflared_user: cloudflared
+cloudflared_metrics_address: 127.0.0.1:2000
+cloudflared_service_enabled: true
+cloudflared_extra_args: []

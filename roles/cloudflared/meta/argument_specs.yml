@@ -1,0 +1,85 @@
+# Input validation and documentation of luminare.infra_edge.cloudflared. Ansible checks these
+# options when the role starts. The variable tables in roles/cloudflared/README.md and
+# docs/configuration.md are generated from this file (python3 tests/role_docs.py --write), and a
+# unit test keeps them equal.
+argument_specs:
+  main:
+    short_description: Tunnel connector for a remotely managed tunnel, as a hardened service
+    description:
+      - Installs a pinned cloudflared version from its package file with a SHA-256 check, holds it
+        with an apt pin, writes the tunnel token to a file that only the service user can read and
+        runs the connector as a hardened systemd service that reads the token from that file, with
+        its metrics listener on the loopback address.
+    author:
+      - Luminare Development
+    options:
+      cloudflared_version:
+        type: str
+        default: "2026.10.2"
+        description: >-
+          cloudflared version to install and hold with an apt pin. Change it together with
+          cloudflared_deb_sha256.
+      cloudflared_deb_sha256:
+        type: dict
+        default:
+          amd64: 30a9a127c24ea8365fa8e11b13684128f34dd8a1137599aa00b4bebda1a0a083
+          arm64: 2e5335ea0ef2fa98e5354357e77aaf453f3756d1f9023cf5b063409e1fb3baca
+        description: >-
+          SHA-256 of the package file of cloudflared_version per Debian architecture (the checksums of
+          cloudflared-linux-amd64.deb and cloudflared-linux-arm64.deb in the GitHub release). The role
+          stops on a host whose architecture has no entry, and when the downloaded file does not match.
+      cloudflared_repository_url:
+        type: str
+        default: https://pkg.cloudflare.com/cloudflared
+        description: >-
+          Cloudflare's apt repository. The package file of the pinned version comes from its pool
+          (pool/main/c/cloudflared/), and the apt source points to it.
+      cloudflared_apt_repository_enabled:
+        type: bool
+        default: true
+        description: >-
+          Add the signed apt repository (key in /usr/share/keyrings/cloudflare-main.gpg, source in
+          /etc/apt/sources.list.d/cloudflared.list), so that apt policy cloudflared shows newer
+          versions; the apt pin keeps the installed one. False leaves the apt sources unchanged.
+      cloudflared_apt_key_url:
+        type: str
+        default: https://pkg.cloudflare.com/cloudflare-main.gpg
+        description: >-
+          Signing key of the apt repository. It is downloaded on every run and replaced when it
+          changed, so a new key from Cloudflare reaches the host with the next run.
+      cloudflared_token:
+        type: str
+        default: "{{ lookup('ansible.builtin.env', 'TUNNEL_TOKEN') }}"
+        no_log: true
+        description: >-
+          Token of the remotely managed tunnel (from the tunnel's install command in the Cloudflare
+          dashboard or from the API). Required. The default reads the environment variable
+          TUNNEL_TOKEN of the control node; never put the token into the inventory unencrypted. It
+          is written to /etc/cloudflared/token (mode 0600, owner cloudflared_user) and never
+          appears on a command line, in the unit or in Ansible output.
+      cloudflared_user:
+        type: str
+        default: cloudflared
+        description: System user and group the connector runs as. Created without a home directory or login shell.
+      cloudflared_metrics_address:
+        type: str
+        default: 127.0.0.1:2000
+        description: >-
+          host:port of the metrics and readiness listener (/metrics, /ready). Keep it on the loopback
+          address or a private address; the role refuses an all-addresses listener.
+      cloudflared_service_enabled:
+        type: bool
+        default: true
+        description: >-
+          Enable and start the connector. With true, a start or restart waits until the tunnel has a
+          connection (systemd Type=notify) and fails after 30 seconds without one. False installs and
+          configures everything but keeps the service stopped and disabled.
+      cloudflared_extra_args:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Extra options of "cloudflared tunnel", placed before "run" (for example --protocol http2,
+          --edge-ip-version 4 or --loglevel debug). Only letters, digits and . _ : / = @ , + - are
+          allowed; --token and --metrics are refused (the role sets the token file and the metrics
+          address).

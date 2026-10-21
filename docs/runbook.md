@@ -23,6 +23,16 @@ install on a host, and the failures of its CI and release automation.
 | **Mitigation** | Move the broken drop-in out of `/etc/nftables.d/`, then `systemctl restart nftables` and `systemctl restart fail2ban`. |
 | **Fix** | Correct the template of the role that wrote the drop-in; the roles check the ruleset with `nft -c` before they restart nftables. |
 
+## Tunnel connector down or not connected
+
+| | |
+|---|---|
+| **Meaning** | `systemctl status cloudflared` on a host with `luminare.infra_edge.cloudflared` shows `failed` or `activating (auto-restart)`, or `curl -s http://127.0.0.1:2000/ready` answers 503 (no connection to Cloudflare's edge). |
+| **Impact** | The public hostnames of the tunnel answer with a Cloudflare error page (for example 1033) unless another connector of the same tunnel runs on a second host. |
+| **Diagnosis** | `journalctl -u cloudflared -n 100` shows why: `Unauthorized` or a token parse error points to the token (rotated or wrong), `failed to dial` or timeouts point to outbound port 7844 (UDP and TCP) or DNS, `Failed to read token file` to `/etc/cloudflared/token` (mode 0600, owner `cloudflared`). The start waits up to 30 seconds for the first connection, then systemd restarts it every 5 seconds. |
+| **Mitigation** | If QUIC (UDP 7844) is blocked on the way, add the two items `--protocol` and `http2` to `cloudflared_extra_args` and run the play; for a rotated token, export the new `TUNNEL_TOKEN` and run the play. |
+| **Fix** | Correct the token, the outbound firewall or DNS, and run the playbook again; it rewrites the token file and restarts the connector. |
+
 ## Security updates are not installed
 
 | | |
