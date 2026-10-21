@@ -1,0 +1,16 @@
+# nginx -t checks the whole configuration on disk on every run, not only after a change: when a
+# change fails the check, the play stops before the reload handler, nginx keeps serving the old
+# configuration, and every later run fails here again until the input is corrected.
+
+- name: Check the configuration with nginx -t
+  ansible.builtin.command: nginx -t
+  register: nginx_config_check
+  changed_when: false
+  # In check mode the new files are not written, so there is nothing new to check.
+  when: not ansible_check_mode
+
+- name: Enable and start nginx
+  ansible.builtin.systemd_service:
+    name: nginx.service
+    enabled: true
+    state: started

@@ -1,0 +1,38 @@
+# Defaults of luminare.infra_edge.nginx. Every variable is described, with its type, in
+# meta/argument_specs.yml; the tables in README.md and docs/configuration.md are generated from it.
+
+# Package
+nginx_package: nginx
+
+# Sites: one reverse proxy site per application, each on a loopback listener for the tunnel
+# connector on the same host. Items: name, server_name, listen, upstream, websocket.
+nginx_sites: []
+nginx_remove_default_site: true
+
+# Client address: taken from the tunnel connector's header, and only from these proxies
+nginx_real_ip_from:
+  - 127.0.0.1
+nginx_real_ip_header: CF-Connecting-IP
+
+# HTTP settings
+nginx_server_tokens: "off"
+nginx_client_max_body_size: 16m
+nginx_gzip: true
+nginx_json_access_log: true
+nginx_websocket_read_timeout: 1h
+# No Strict-Transport-Security: TLS ends at the tunnel's edge, which sets it.
+nginx_security_headers:
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Stream module: TCP and UDP relays to another host (items: name, listen, upstream, protocols)
+nginx_stream_enabled: false
+nginx_stream_upstreams: []
+
+# Firewall drop-in for the relay ports: written when /etc/nftables.d of the base role exists, or
+# when nginx_firewall_manage is true (the role then creates the directory)
+nginx_firewall_manage: false
+nginx_firewall_sources:
+  - 0.0.0.0/0
+  - ::/0

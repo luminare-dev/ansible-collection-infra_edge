@@ -1,0 +1,27 @@
+# {{ ansible_managed }} (luminare.infra_edge.nginx)
+# Relay ports of the nginx stream module. Included by /etc/nftables.conf after table inet filter
+# (input policy drop): accept rules only. The sites listen on loopback addresses and need none.
+{% set v4 = nginx_firewall_sources | reject('search', ':') | list %}
+{% set v6 = nginx_firewall_sources | select('search', ':') | list %}
+{% for relay in nginx_stream_upstreams %}
+{%   set port = relay.listen | string | regex_replace('^.*:', '') %}
+{%   for proto in relay.protocols | default(['tcp'], true) | unique %}
+{%     if '0.0.0.0/0' in v4 and '::/0' in v6 %}
+add rule inet filter input {{ proto }} dport {{ port }} accept comment "nginx relay {{ relay.name }}"
+{%     else %}
+{%       if '0.0.0.0/0' in v4 %}
+add rule inet filter input meta nfproto ipv4 {{ proto }} dport {{ port }} accept comment "nginx relay {{ relay.name }}"
+{%       elif v4 | length > 0 %}
+add rule inet filter input ip saddr { {{ v4 | join(', ') }} } {{ proto }} dport {{ port }} accept comment "nginx relay {{ relay.name }}"
+{%       endif %}
+{%       if '::/0' in v6 %}
+add rule inet filter input meta nfproto ipv6 {{ proto }} dport {{ port }} accept comment "nginx relay {{ relay.name }}"
+{%       elif v6 | length > 0 %}
+add rule inet filter input ip6 saddr { {{ v6 | join(', ') }} } {{ proto }} dport {{ port }} accept comment "nginx relay {{ relay.name }}"
+{%       endif %}
+{%     endif %}
+{%   endfor %}
+{% endfor %}
+{% if nginx_firewall_sources | length == 0 %}
+# nginx_firewall_sources is empty: no rule, the relay ports are reachable from this host only.
+{% endif %}

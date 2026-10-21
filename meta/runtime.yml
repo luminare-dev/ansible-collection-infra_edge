@@ -1,5 +1,5 @@
 # Oldest ansible-core this collection is tested with: CI runs 2.21.5, and the Molecule scenarios
-# of the base and cloudflared roles (converge, idempotence, verify) passed with ansible-core
-# 2.20.10 on 2026-10-21. Lower it only after a Molecule converge with an older ansible-core has passed
-# (docs/adr/0007, docs/adr/0010).
+# of the base, cloudflared and nginx roles (converge, idempotence, verify) passed with ansible-core
+# 2.20.10 on 2026-10-21. Lower it only after a Molecule converge with an older ansible-core has
+# passed (docs/adr/0007, docs/adr/0010).
 requires_ansible: ">=2.20.0"

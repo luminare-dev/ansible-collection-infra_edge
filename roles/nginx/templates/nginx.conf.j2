@@ -1,0 +1,146 @@
+# {{ ansible_managed }} (luminare.infra_edge.nginx)
+# Main configuration. Each site is a file in /etc/nginx/sites-available, enabled by a symlink in
+# /etc/nginx/sites-enabled, and listens on a loopback address for the tunnel connector on this
+# host. nginx -t checks the whole configuration before every reload.
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log {{ nginx_log_dir }}/error.log;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+	worker_connections 768;
+}
+
+http {
+	sendfile on;
+	tcp_nopush on;
+	types_hash_max_size 2048;
+	include /etc/nginx/mime.types;
+	default_type application/octet-stream;
+
+	# "Server: nginx" without the version, also on error pages.
+	server_tokens {{ nginx_server_tokens }};
+	client_max_body_size {{ nginx_client_max_body_size }};
+
+	# Client address: the tunnel connector on this host sends it in {{ nginx_real_ip_header }}.
+	# Only a connection from these addresses may set it; for any other connection the header is
+	# ignored and the connection's own address stays the client address.
+{% for source in nginx_real_ip_from %}
+	set_real_ip_from {{ source }};
+{% endfor %}
+	real_ip_header {{ nginx_real_ip_header }};
+	real_ip_recursive off;
+
+	# 1 for a connection from a trusted proxy (the same addresses as set_real_ip_from).
+	geo $realip_remote_addr $edge_trusted_proxy {
+		default 0;
+{% for source in nginx_real_ip_from %}
+		{{ source }} 1;
+{% endfor %}
+	}
+
+	# X-Forwarded-Proto for the application: the trusted connector's value (https for a public
+	# hostname of the tunnel), for every other connection the scheme of the listener.
+	map "$edge_trusted_proxy:$http_x_forwarded_proto" $edge_forwarded_proto {
+		default $scheme;
+		"1:https" https;
+		"1:http" http;
+	}
+
+	# Websocket sites pass an Upgrade request on and close other connections after the response.
+	map $http_upgrade $connection_upgrade {
+		default upgrade;
+		"" close;
+	}
+
+{% if nginx_json_access_log %}
+	# One JSON object per request. The query string is not logged (it may carry tokens), the
+	# client address is (personal data: logrotate keeps the files for 14 days).
+	log_format edge_json escape=json
+		'{"time":"$time_iso8601",'
+		'"remote_addr":"$remote_addr",'
+		'"realip_remote_addr":"$realip_remote_addr",'
+		'"server_name":"$server_name",'
+		'"host":"$host",'
+		'"method":"$request_method",'
+		'"path":"$uri",'
+		'"protocol":"$server_protocol",'
+		'"status":$status,'
+		'"bytes_sent":$body_bytes_sent,'
+		'"request_time":$request_time,'
+		'"upstream_addr":"$upstream_addr",'
+		'"upstream_status":"$upstream_status",'
+		'"upstream_response_time":"$upstream_response_time",'
+		'"referer":"$http_referer",'
+		'"user_agent":"$http_user_agent",'
+		'"cf_ray":"$http_cf_ray"}';
+	access_log {{ nginx_log_dir }}/access.log edge_json;
+{% else %}
+	access_log {{ nginx_log_dir }}/access.log combined;
+{% endif %}
+
+{% if nginx_gzip %}
+	gzip on;
+	gzip_vary on;
+	gzip_proxied any;
+	gzip_comp_level 5;
+	gzip_min_length 256;
+	gzip_types text/plain text/css text/xml text/javascript application/javascript application/json
+		application/xml application/rss+xml application/atom+xml image/svg+xml;
+{% else %}
+	gzip off;
+{% endif %}
+
+	# Security headers: added to every response that does not carry the header from the
+	# application already (an application with a stricter value keeps it), error pages included.
+	proxy_hide_header X-Powered-By;
+{% for name, value in nginx_security_headers.items() %}
+{%   set var = name | lower | replace('-', '_') %}
+	map $upstream_http_{{ var }} $edge_header_{{ var }} {
+		"" "{{ value }}";
+		default "";
+	}
+	add_header {{ name }} $edge_header_{{ var }} always;
+{% endfor %}
+
+	include /etc/nginx/conf.d/*.conf;
+	include {{ nginx_sites_enabled_dir }}/*;
+}
+{% if nginx_stream_enabled %}
+
+# Stream module: TCP and UDP relays to another host. A relay listens on a public address; the
+# role opens its ports in /etc/nftables.d/20-nginx.nft when the base role's firewall is present.
+stream {
+{%   if nginx_json_access_log %}
+	log_format edge_stream_json escape=json
+		'{"time":"$time_iso8601",'
+		'"remote_addr":"$remote_addr",'
+		'"server_port":$server_port,'
+		'"protocol":"$protocol",'
+		'"status":$status,'
+		'"bytes_sent":$bytes_sent,'
+		'"bytes_received":$bytes_received,'
+		'"session_time":$session_time,'
+		'"upstream_addr":"$upstream_addr"}';
+	access_log {{ nginx_log_dir }}/stream-access.log edge_stream_json;
+{%   else %}
+	log_format edge_stream '$remote_addr [$time_local] $protocol $server_port $status '
+		'$bytes_sent $bytes_received $session_time "$upstream_addr"';
+	access_log {{ nginx_log_dir }}/stream-access.log edge_stream;
+{%   endif %}
+{%   for relay in nginx_stream_upstreams %}
+
+	upstream {{ relay.name }} {
+		server {{ relay.upstream }};
+	}
+
+	server {
+{%     for protocol in relay.protocols | default(['tcp'], true) | unique %}
+		listen {{ relay.listen }}{{ ' udp reuseport' if protocol == 'udp' else '' }};
+{%     endfor %}
+		proxy_pass {{ relay.name }};
+	}
+{%   endfor %}
+}
+{% endif %}

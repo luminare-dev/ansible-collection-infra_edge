@@ -1,0 +1,377 @@
+# Checks of the converged instance. Requests go through files/molecule_client.py, and the test
+# application answers with the request headers it received, so the checks see both sides of the
+# proxy: what the client gets and what the application gets. Requests only read state; they add
+# lines to the access logs.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    # Arguments of molecule-client per request (see files/molecule_client.py).
+    nginx_test_requests:
+      # From 127.0.0.1, the trusted connector address, with the headers of a request through the
+      # tunnel plus a forged X-Forwarded-For list and a forged Forwarded header.
+      trusted:
+        - http
+        - "8080"
+        - /molecule-trusted
+        - "--header=Host: demo.example.com"
+        - "--header=CF-Connecting-IP: 203.0.113.7"
+        - "--header=X-Forwarded-For: 198.51.100.23"
+        - "--header=Forwarded: for=198.51.100.24;proto=https"
+        - "--header=X-Forwarded-Proto: https"
+        - "--header=CF-Ray: 0000000000000000-TST"
+      # The same kind of headers from 127.0.0.2, a loopback address that is not a trusted proxy.
+      untrusted:
+        - http
+        - "8080"
+        - /molecule-untrusted
+        - --source=127.0.0.2
+        - "--header=Host: demo.example.com"
+        - "--header=CF-Connecting-IP: 203.0.113.99"
+        - "--header=X-Forwarded-Proto: https"
+      query:
+        - http
+        - "8080"
+        - /molecule-query?token=molecule-query-secret
+        - "--header=Host: demo.example.com"
+      compressed:
+        - http
+        - "8080"
+        - /molecule-gzip
+        - "--header=Host: demo.example.com"
+        - "--header=Accept-Encoding: gzip"
+      # The application sets its own X-Frame-Options: DENY.
+      frame_deny:
+        - http
+        - "8080"
+        - /frame-deny
+        - "--header=Host: demo.example.com"
+      # The application closes the connection without an answer: nginx's own 502 page.
+      bad_gateway:
+        - http
+        - "8081"
+        - /close
+        - "--header=Host: api.example.com"
+      websocket:
+        - websocket
+        - "8080"
+        - /molecule-websocket
+        - "--header=Host: demo.example.com"
+        - --payload=molecule-websocket-echo
+      # The api site has websocket false: the Upgrade request reaches the application as a plain GET.
+      websocket_off:
+        - websocket
+        - "8081"
+        - /molecule-no-websocket
+        - "--header=Host: api.example.com"
+        - --payload=unused
+      relay_tcp:
+        - tcp
+        - "30120"
+        - --payload=molecule-tcp-echo
+      relay_udp:
+        - udp
+        - "30120"
+        - --payload=molecule-udp-echo
+  tasks:
+    # Configuration and service
+    - name: Check the configuration with nginx -t
+      ansible.builtin.command: nginx -t
+      register: nginx_test_check
+      changed_when: false
+
+    - name: Read the configuration as nginx loads it
+      ansible.builtin.command: nginx -T
+      register: nginx_test_dump
+      changed_when: false
+
+    - name: Check the hardening settings in the loaded configuration
+      vars:
+        lines: "{{ nginx_test_dump.stdout_lines | map('trim') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "'test is successful' in nginx_test_check.stderr"
+          - "'server_tokens off;' in lines"
+          - lines | select('match', '^set_real_ip_from ') | list == ['set_real_ip_from 127.0.0.1;']
+          - "'real_ip_header CF-Connecting-IP;' in lines"
+          - "'real_ip_recursive off;' in lines"
+          - "'client_max_body_size 16m;' in lines"
+          - "'stream {' in lines"
+
+    - name: Read the state of nginx
+      ansible.builtin.systemd_service:
+        name: nginx.service
+      register: nginx_test_service
+
+    - name: Check that nginx is enabled and running
+      ansible.builtin.assert:
+        that:
+          - nginx_test_service.status.UnitFileState == 'enabled'
+          - nginx_test_service.status.ActiveState == 'active'
+          - nginx_test_service.status.SubState == 'running'
+
+    - name: Read the site files and symlinks
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nginx_test_site_files
+      loop:
+        - /etc/nginx/sites-enabled/default
+        - /etc/nginx/sites-enabled/demo
+        - /etc/nginx/sites-enabled/api
+        - /etc/nginx/sites-available/demo
+
+    - name: Check that the default site is gone and both sites are enabled
+      vars:
+        stats: "{{ nginx_test_site_files.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - not stats[0].exists
+          - stats[1].islnk and stats[1].lnk_source == '/etc/nginx/sites-available/demo'
+          - stats[2].islnk and stats[2].lnk_source == '/etc/nginx/sites-available/api'
+          - stats[3].isreg and stats[3].mode == '0644' and stats[3].pw_name == 'root'
+
+    # Listeners: the sites only on the loopback address, the relay on every address
+    - name: Read the listening sockets
+      ansible.builtin.command: ss --listening --numeric --processes --no-header --tcp --udp
+      register: nginx_test_sockets
+      changed_when: false
+
+    - name: Check that nginx listens on 127.0.0.1:8080 and :8081 and the relay port only, and nothing on port 80
+      vars:
+        nginx_lines: "{{ nginx_test_sockets.stdout_lines | select('search', '\"nginx\"') | map('split') | list }}"
+        all_ports: >-
+          {{ nginx_test_sockets.stdout_lines | map('split') | map(attribute=4)
+             | map('regex_replace', '^.*:', '') | list }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            nginx_lines | selectattr(0, 'equalto', 'tcp') | map(attribute=4) | unique | sort
+            == ['0.0.0.0:30120', '127.0.0.1:8080', '127.0.0.1:8081']
+          - nginx_lines | selectattr(0, 'equalto', 'udp') | map(attribute=4) | unique | list == ['0.0.0.0:30120']
+          - "'80' not in all_ports"
+
+    # Requests
+    - name: Send the test requests
+      ansible.builtin.command:
+        argv: "{{ ['python3', '/usr/local/bin/molecule-client'] + item.value }}"
+      register: nginx_test_raw
+      changed_when: false
+      loop: "{{ nginx_test_requests | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Collect the answers
+      ansible.builtin.set_fact:
+        nginx_test_answers: >-
+          {{ dict(nginx_test_raw.results | map(attribute='item.key')
+                  | zip(nginx_test_raw.results | map(attribute='stdout') | map('from_json'))) }}
+
+    - name: Check the client address that the application gets from the trusted connector
+      vars:
+        answer: "{{ nginx_test_answers.trusted }}"
+        seen: "{{ (answer.body | from_json).headers }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 200
+          - seen['host'] == 'demo.example.com'
+          - seen['x-real-ip'] == '203.0.113.7'
+          # The forged list is replaced by the checked address, the forged Forwarded is dropped.
+          - seen['x-forwarded-for'] == '203.0.113.7'
+          - "'forwarded' not in seen"
+          - seen['cf-connecting-ip'] == '203.0.113.7'
+          - seen['x-forwarded-proto'] == 'https'
+          # websocket site, no Upgrade: the connection to the application closes after the answer.
+          - seen['connection'] == 'close'
+
+    - name: Check that the header of an untrusted address is ignored
+      vars:
+        answer: "{{ nginx_test_answers.untrusted }}"
+        seen: "{{ (answer.body | from_json).headers }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 200
+          - seen['x-real-ip'] == '127.0.0.2'
+          - seen['x-forwarded-for'] == '127.0.0.2'
+          - seen['cf-connecting-ip'] == '127.0.0.2'
+          - seen['x-forwarded-proto'] == 'http'
+
+    - name: Check the Server header (no version) and the security headers
+      vars:
+        headers: "{{ nginx_test_answers.trusted.header_values }}"
+      ansible.builtin.assert:
+        that:
+          - headers['server'] == ['nginx']
+          - headers['x-content-type-options'] == ['nosniff']
+          - headers['x-frame-options'] == ['SAMEORIGIN']
+          - headers['referrer-policy'] == ['strict-origin-when-cross-origin']
+          - "'x-powered-by' not in headers"
+          - "'strict-transport-security' not in headers"
+
+    - name: Check that the application's own X-Frame-Options wins and is not doubled
+      vars:
+        headers: "{{ nginx_test_answers.frame_deny.header_values }}"
+      ansible.builtin.assert:
+        that:
+          - nginx_test_answers.frame_deny.status == 200
+          - headers['x-frame-options'] == ['DENY']
+          - headers['x-content-type-options'] == ['nosniff']
+
+    - name: Check nginx's own error page (502)
+      vars:
+        answer: "{{ nginx_test_answers.bad_gateway }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 502
+          - answer.header_values['server'] == ['nginx']
+          - answer.body is search('<center>nginx</center>')
+          - answer.body is not search('nginx/[0-9]')
+          - answer.header_values['x-content-type-options'] == ['nosniff']
+          - answer.header_values['x-frame-options'] == ['SAMEORIGIN']
+          - answer.header_values['referrer-policy'] == ['strict-origin-when-cross-origin']
+
+    - name: Check gzip for a proxied JSON answer
+      vars:
+        answer: "{{ nginx_test_answers.compressed }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 200
+          - answer.header_values['content-encoding'] == ['gzip']
+          - answer.header_values['vary'] == ['Accept-Encoding']
+          - (answer.body | from_json).path == '/molecule-gzip'
+
+    - name: Check the websocket proxy (101, then data both ways) and a site without it
+      vars:
+        seen_off: "{{ (nginx_test_answers.websocket_off.body | from_json).headers }}"
+      ansible.builtin.assert:
+        that:
+          - nginx_test_answers.websocket.status == 101
+          - nginx_test_answers.websocket.header_values['upgrade'] == ['websocket']
+          - nginx_test_answers.websocket.echo == 'molecule-websocket-echo'
+          - nginx_test_answers.websocket_off.status == 200
+          - "'upgrade' not in seen_off"
+          - "'connection' not in seen_off"
+
+    - name: Check the TCP and UDP relay
+      ansible.builtin.assert:
+        that:
+          - nginx_test_answers.relay_tcp.echo == 'molecule-tcp-echo'
+          - nginx_test_answers.relay_udp.echo == 'molecule-udp-echo'
+
+    # JSON access logs
+    - name: Read the access log
+      ansible.builtin.slurp:
+        src: /var/log/nginx/access.log
+      register: nginx_test_access_log
+
+    # from_json fails the task if any line is not a JSON object.
+    - name: Parse every line of the access log as JSON
+      ansible.builtin.set_fact:
+        nginx_test_log_text: "{{ nginx_test_access_log.content | b64decode }}"
+        nginx_test_log: "{{ (nginx_test_access_log.content | b64decode).splitlines() | map('from_json') | list }}"
+
+    - name: Check the logged client addresses, the missing query string and the 502
+      vars:
+        trusted: "{{ nginx_test_log | selectattr('path', 'equalto', '/molecule-trusted') | list | last }}"
+        untrusted: "{{ nginx_test_log | selectattr('path', 'equalto', '/molecule-untrusted') | list | last }}"
+        bad_gateway: "{{ nginx_test_log | selectattr('path', 'equalto', '/close') | list | last }}"
+      ansible.builtin.assert:
+        that:
+          - trusted.remote_addr == '203.0.113.7'
+          - trusted.realip_remote_addr == '127.0.0.1'
+          - trusted.status == 200
+          - trusted.server_name == 'demo.example.com'
+          - trusted.upstream_addr == '127.0.0.1:9000'
+          - trusted.cf_ray == '0000000000000000-TST'
+          - untrusted.remote_addr == '127.0.0.2'
+          - untrusted.realip_remote_addr == '127.0.0.2'
+          - nginx_test_log | selectattr('path', 'equalto', '/molecule-query') | list | length > 0
+          - "'molecule-query-secret' not in nginx_test_log_text"
+          - bad_gateway.status == 502
+          - bad_gateway.server_name == 'api.example.com'
+
+    - name: Read the owner and mode of the access logs
+      ansible.builtin.stat:
+        path: /var/log/nginx/{{ item }}
+      register: nginx_test_log_files
+      loop:
+        - access.log
+        - stream-access.log
+
+    - name: Check that only root and the adm group can read the logs (they hold client addresses)
+      ansible.builtin.assert:
+        that:
+          - item.stat.mode == '0640'
+          - item.stat.pw_name == 'www-data'
+          - item.stat.gr_name == 'adm'
+      loop: "{{ nginx_test_log_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # A TCP session is logged when it ends, so the log may lag behind the request for a moment.
+    - name: Read the stream log until it shows the TCP session
+      ansible.builtin.slurp:
+        src: /var/log/nginx/stream-access.log
+      register: nginx_test_stream_log
+      until: >-
+        (nginx_test_stream_log.content | b64decode).splitlines() | map('from_json')
+        | selectattr('protocol', 'equalto', 'TCP') | list | length > 0
+      retries: 10
+      delay: 1
+
+    - name: Check the stream log entry of the TCP relay
+      vars:
+        entry: >-
+          {{ (nginx_test_stream_log.content | b64decode).splitlines() | map('from_json')
+             | selectattr('protocol', 'equalto', 'TCP') | list | last }}
+      ansible.builtin.assert:
+        that:
+          - entry.server_port == 30120
+          - entry.status == 200
+          - entry.upstream_addr == '127.0.0.1:9001'
+          - entry.bytes_received == 'molecule-tcp-echo' | length
+          - entry.remote_addr == '127.0.0.1'
+
+    # Firewall drop-in in the layout of the base role (converge.yml sets nginx_firewall_manage,
+    # so the role created the directory)
+    - name: Read the drop-in directory and file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nginx_test_dropin_stat
+      loop:
+        - /etc/nftables.d
+        - /etc/nftables.d/20-nginx.nft
+
+    - name: Read the firewall drop-in
+      ansible.builtin.slurp:
+        src: /etc/nftables.d/20-nginx.nft
+      register: nginx_test_dropin
+
+    - name: Check that the drop-in only accepts the relay port (tcp and udp)
+      vars:
+        stats: "{{ nginx_test_dropin_stat.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - stats[0].isdir and stats[0].mode == '0755' and stats[0].pw_name == 'root'
+          - stats[1].isreg and stats[1].mode == '0644' and stats[1].pw_name == 'root'
+          - >-
+            (nginx_test_dropin.content | b64decode).splitlines() | reject('match', '^(#|$)') | list
+            == ['add rule inet filter input tcp dport 30120 accept comment "nginx relay relay"',
+                'add rule inet filter input udp dport 30120 accept comment "nginx relay relay"']
+
+    - name: Check the whole ruleset with nft
+      ansible.builtin.command: nft --check --file /etc/nftables.conf
+      changed_when: false
+
+    # The role restarted the running nftables, so the loaded ruleset has the relay rules.
+    - name: Read the loaded input chain
+      ansible.builtin.command: nft list chain inet filter input
+      register: nginx_test_chain
+      changed_when: false
+
+    - name: Check that the loaded ruleset accepts the relay port and keeps the drop policy
+      ansible.builtin.assert:
+        that:
+          - nginx_test_chain.stdout is search('policy drop;')
+          - nginx_test_chain.stdout is search('tcp dport 30120 accept comment "nginx relay relay"')
+          - nginx_test_chain.stdout is search('udp dport 30120 accept comment "nginx relay relay"')
+          - nginx_test_chain.stdout is not search('dport (8080|8081)')

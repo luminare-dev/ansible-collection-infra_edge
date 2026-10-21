@@ -1,0 +1,103 @@
+# Test fixtures:
+# 1. The firewall layout of luminare.infra_edge.base (docs/adr/0009) without its SSH rules:
+#    /etc/nftables.conf with input policy drop and the include of /etc/nftables.d/*.nft as its
+#    last line, loaded by nftables.service in the instance's own network namespace. The directory
+#    /etc/nftables.d is not created here: converge.yml sets nginx_firewall_manage, so the role
+#    must create it, write its drop-in there, check it with nft and restart the running nftables;
+#    side_effect.yml then runs with the default (the directory exists).
+# 2. A test application (files/molecule_upstream.py) as a systemd service: HTTP on
+#    127.0.0.1:9000 for the sites, TCP and UDP echo on 127.0.0.1:9001 for the relay.
+# 3. A test client (files/molecule_client.py) for verify.yml, which can also connect from
+#    127.0.0.2, a loopback address that is not a trusted proxy.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    # systemd-networkd manages no interface in the containers, so its wait-online service would
+    # hold network-online.target, which nginx.service waits for, for two minutes.
+    - name: Mask systemd-networkd-wait-online (container network, not configured by networkd)
+      ansible.builtin.systemd_service:
+        name: systemd-networkd-wait-online.service
+        masked: true
+
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+
+    - name: Write a ruleset in the layout of the base role
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        mode: "0755"
+        content: |
+          #!/usr/sbin/nft -f
+          # Molecule only (roles/nginx/molecule/default/prepare.yml): the layout of the base role.
+          flush ruleset
+
+          table inet filter {
+            chain input {
+              type filter hook input priority filter; policy drop;
+              iif "lo" accept
+              ct state established,related accept
+              ct state invalid drop
+              meta l4proto icmp accept
+              meta l4proto ipv6-icmp accept
+            }
+
+            chain forward {
+              type filter hook forward priority filter; policy drop;
+            }
+
+            chain output {
+              type filter hook output priority filter; policy accept;
+            }
+          }
+
+          include "/etc/nftables.d/*.nft"
+
+    - name: Load the ruleset
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        enabled: true
+        state: started
+
+    - name: Copy the test application and the test client
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - src: molecule_upstream.py
+          dest: /usr/local/bin/molecule-upstream
+        - src: molecule_client.py
+          dest: /usr/local/bin/molecule-client
+
+    - name: Write the unit of the test application
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/molecule-upstream.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Test application for the Molecule scenario of luminare.infra_edge.nginx
+
+          [Service]
+          ExecStart=/usr/bin/python3 /usr/local/bin/molecule-upstream
+          User=nobody
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start the test application
+      ansible.builtin.systemd_service:
+        name: molecule-upstream.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for the test application
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        timeout: 30
+      loop: [9000, 9001]

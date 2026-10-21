@@ -1,0 +1,14 @@
+# The inventory drops the "api" site and turns the relay off; verify_removed.yml checks that the
+# role removed both from the host and from the firewall drop-in. nginx_firewall_manage keeps its
+# default (false): the role manages the drop-in because /etc/nftables.d exists now.
+- name: Side effect
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Apply luminare.infra_edge.nginx with one site and without the relay
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.nginx
+      vars:
+        nginx_sites:
+          - "{{ nginx_test_demo_site }}"
+        nginx_stream_enabled: false

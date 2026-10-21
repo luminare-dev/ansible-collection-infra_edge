@@ -1,0 +1,35 @@
+# Molecule scenario of luminare.infra_edge.nginx. The driver and both platforms (Debian 13 and
+# Ubuntu 24.04) come from .config/molecule/config.yml; run it with
+#   cd roles/nginx && export MOLECULE_ROLE=nginx && molecule test
+# prepare.yml starts a small test application and loads a firewall in the layout of the base
+# role. converge.yml sets up two sites and a TCP and UDP relay, whose ports the role writes into
+# a firewall drop-in (with nginx_firewall_manage, so it also creates /etc/nftables.d). After
+# verify.yml, side_effect.yml removes one site and the relay from the inventory, and
+# verify_removed.yml checks that the role removed them from the host. Nothing leaves the
+# instance except the package downloads.
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # The site of the plan's example, used by converge.yml and side_effect.yml.
+        nginx_test_demo_site:
+          name: demo
+          server_name: demo.example.com
+          listen: 127.0.0.1:8080
+          upstream: http://127.0.0.1:9000
+          websocket: true
+scenario:
+  name: default
+  # The shared sequence (.config/molecule/config.yml) plus the removal check after verify.
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - side_effect
+    - verify verify_removed.yml
+    - destroy

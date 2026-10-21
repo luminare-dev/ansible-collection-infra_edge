@@ -95,6 +95,40 @@ port 7844 is blocked.
 **Fix:** read the reason with `journalctl -u cloudflared -n 50` on the host, then follow
 "Tunnel connector down or not connected" in the [runbook](runbook.md).
 
+## The nginx role stops with "Every item of nginx_sites needs a unique name"
+
+**Cause:** an item of `nginx_sites` breaks a rule that the role checks before it changes
+anything: the `listen` address is not on the loopback interface (only `127.0.0.1:<port>` or
+`[::1]:<port>`; the tunnel connector on the same host is the only client), the `upstream` is not
+an `http://` URL, the name is used twice or is `default`, or a value contains a space, quote,
+semicolon or brace. The message lists the site names it read.
+
+**Fix:** correct the item. A site for another host needs that host's own nginx and connector.
+
+## The nginx role fails at "Check the configuration with nginx -t"
+
+**Cause:** the role wrote the files, but nginx refuses the configuration, for example because the
+host name in an `upstream` does not resolve on the host (nginx resolves it when it loads the
+configuration: `host not found in upstream`), or because of a file in `/etc/nginx/conf.d/` that
+the role does not manage. nginx keeps serving the configuration it had before; the role does not
+reload it.
+
+**Fix:** read the message of the failed task (nginx names the file and line), correct the
+inventory or the other file, and run the playbook again. Until then every run fails at this
+check.
+
+## A relay port of the nginx role is not reachable from other hosts
+
+**Cause:** the firewall of the base role has no rule for it: `/etc/nftables.d` did not exist
+when the role ran (and `nginx_firewall_manage` is false), nftables was not running, so the role
+did not restart it, or `nginx_firewall_sources` does not cover the client. A firewall in front of
+the host (for example at the hosting provider) can also block it.
+
+**Fix:** check the rules with `cat /etc/nftables.d/20-nginx.nft` and
+`nft list chain inet filter input`, and the listener with `ss -tulnp | grep nginx`. Apply the
+base role before the nginx role (or set `nginx_firewall_manage: true`), correct
+`nginx_firewall_sources`, and run the playbook again.
+
 ## The role 'devsec.hardening.ssh_hardening' was not found
 
 ```text
