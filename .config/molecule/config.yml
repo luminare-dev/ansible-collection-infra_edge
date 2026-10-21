@@ -1,0 +1,67 @@
+# Shared Molecule configuration for every role scenario (roles/<role>/molecule/default/).
+# Molecule reads this file from the repository root and merges the scenario's molecule.yml on
+# top of it, so a scenario only adds what is special to its role (docs/adr/0006).
+#
+# Run one role locally (Docker with systemd containers, Python venv from requirements-test.txt):
+#   cd roles/<role> && export MOLECULE_ROLE=<role>
+#   molecule test                                    # both platforms in one run
+#   molecule test --platform-name ie-<role>-debian13 # one platform, as one CI matrix job does
+# MOLECULE_ROLE goes into the instance names (ie-<role>-debian13, ie-<role>-ubuntu2404), so two
+# roles can run at the same time on one Docker daemon. CI runs one job per role and platform
+# suffix (debian13, ubuntu2404; tests/test_collection.py keeps the ci.yml matrix equal to the
+# platforms below) and sets MOLECULE_ROLE in each.
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  # The same container settings for both platforms: systemd as PID 1 needs a
+  # privileged container that shares the host cgroup namespace.
+  - name: ie-${MOLECULE_ROLE:-role}-debian13
+    image: ie-molecule-debian13
+    dockerfile: ../../../../.config/molecule/Dockerfile.j2
+    pre_build_image: false
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+    groups:
+      - debian
+  - name: ie-${MOLECULE_ROLE:-role}-ubuntu2404
+    image: ie-molecule-ubuntu2404
+    dockerfile: ../../../../.config/molecule/Dockerfile.j2
+    pre_build_image: false
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+    groups:
+      - ubuntu
+provisioner:
+  name: ansible
+ansible:
+  cfg:
+    defaults:
+      callback_result_format: yaml
+verifier:
+  name: ansible
+scenario:
+  # One extra "destroy" before "syntax" removes the containers of an aborted earlier run.
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

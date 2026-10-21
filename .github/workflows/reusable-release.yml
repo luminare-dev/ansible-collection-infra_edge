@@ -4,6 +4,10 @@
 # release. Everything happens in one run because a tag or release created with GITHUB_TOKEN
 # does not trigger other workflows.
 #
+# In an Ansible collection (a galaxy.yml at the root) the build job also builds the collection
+# tarball with "ansible-galaxy collection build"; SHA256SUMS and the attestation then cover both
+# archives. Nothing is uploaded to a package index.
+#
 # The release is created as a draft (release-please-config.json: draft + force-tag-creation) and
 # published only after every file is attached, so it also works with immutable releases turned on.
 name: reusable-release
@@ -75,6 +79,31 @@ jobs:
           set -euo pipefail
           python3 scripts/package_release.py --ref HEAD --version "${TAG#v}" --name "$ARCHIVE_NAME" --out dist
           (cd dist && sha256sum -c SHA256SUMS)
+
+      - name: Collection tarball (ansible-galaxy collection build) and SHA256SUMS of both archives
+        if: ${{ hashFiles('galaxy.yml') != '' }}
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/galaxy-venv"
+          export PATH="$RUNNER_TEMP/galaxy-venv/bin:$PATH"
+          pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
+          meta=$(python3 -c 'import yaml; g = yaml.safe_load(open("galaxy.yml"))
+          print(g["namespace"], g["name"], g["version"])')
+          read -r namespace name version <<< "$meta"
+          if [ "$version" != "${TAG#v}" ]; then
+            echo "::error file=galaxy.yml::galaxy.yml has version ${version}, the tag is ${TAG}"
+            exit 1
+          fi
+          tarball="${namespace}-${name}-${version}.tar.gz"
+          ansible-galaxy collection build --output-path dist
+          # Smoke install into an empty path that is the only collections path, so that a copy in
+          # a default path cannot turn the install into "Nothing to do".
+          ANSIBLE_COLLECTIONS_PATH="$RUNNER_TEMP/installed" \
+            ansible-galaxy collection install --no-deps -p "$RUNNER_TEMP/installed" "dist/${tarball}"
+          test -f "$RUNNER_TEMP/installed/ansible_collections/${namespace}/${name}/MANIFEST.json"
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
 
       - name: Hand the files to the publish job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

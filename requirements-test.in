@@ -1,0 +1,14 @@
+# Test tools for CI (lint-test, Molecule, release build); compiled into requirements-test.txt with
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-test.in
+# (pip-tools 7.6.2) under Python 3.12 on Ubuntu 24.04, the Python of the GitHub ubuntu-24.04
+# runner. Install with
+#   pip install --require-hashes --only-binary=:all: -r requirements-test.txt
+# The "ansible" package brings the community collections that the Molecule docker driver and
+# the roles use (community.docker, ansible.posix, ...), pinned and hashed with it (docs/adr/0007).
+-c requirements-dev.txt
+ansible==14.5.0
+ansible-core==2.21.5
+ansible-lint==26.10.1
+molecule==26.10.0
+molecule-plugins[docker]==26.10.12
+yamllint==1.38.0
