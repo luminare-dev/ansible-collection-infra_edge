@@ -19,6 +19,7 @@ tags:
   - tunnel
   - web
   - database
+  - backup
   - debian
   - ubuntu
 # Only community collections that a role really uses go here, each with a version range (the

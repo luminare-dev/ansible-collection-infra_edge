@@ -1,0 +1,85 @@
+# Checks after side_effect.yml: the pinned upstream release is installed as /usr/local/bin/restic
+# (its download removed) and every job uses it; the timers are stopped and disabled while the
+# services stay; a backup started by hand writes a snapshot with the upstream release into the
+# repository that the distribution's package created, and the restore test passes with it.
+- name: Verify the upstream release
+  hosts: all
+  gather_facts: false
+  vars:
+    restic_backup_test_version: >-
+      {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../defaults/main.yml')
+          | from_yaml).restic_backup_version }}
+  tasks:
+    - name: Read the version of the upstream binary
+      ansible.builtin.command:
+        argv: [/usr/local/bin/restic, version]
+      register: restic_backup_test_binary
+      changed_when: false
+
+    - name: Read the binary, the download folder and the wrapper
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      register: restic_backup_test_binary_files
+      loop:
+        - /usr/local/bin/restic
+        - /var/cache/luminare-restic-download
+
+    - name: Read the wrapper
+      ansible.builtin.slurp:
+        src: /usr/local/sbin/restic-env
+      register: restic_backup_test_wrapper
+
+    - name: Check the binary of the pinned release, the removed download and the wrapper
+      vars:
+        binary_stat: "{{ restic_backup_test_binary_files.results[0].stat }}"
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_binary.stdout.startswith('restic ' ~ restic_backup_test_version ~ ' ')
+          - binary_stat.mode == '0755' and binary_stat.pw_name == 'root'
+          - not restic_backup_test_binary_files.results[1].stat.exists
+          - (restic_backup_test_wrapper.content | b64decode) is search("\nexec /usr/local/bin/restic \"\$@\"\n")
+
+    - name: Read the timers and the services
+      ansible.builtin.command:
+        argv: [systemctl, show, "--property=LoadState,UnitFileState,ActiveState", "{{ item }}"]
+      register: restic_backup_test_units
+      changed_when: false
+      loop: [restic-backup.timer, restic-check.timer, restic-backup.service, restic-check.service]
+
+    - name: Check that the timers are stopped and disabled and the services stay
+      ansible.builtin.assert:
+        that:
+          - "'UnitFileState=disabled' in item.stdout_lines and 'ActiveState=inactive' in item.stdout_lines"
+          - "'LoadState=loaded' in item.stdout_lines"
+        quiet: true
+      loop: "{{ restic_backup_test_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.item.endswith('.timer')
+
+    # A oneshot service: the start returns when the run has finished.
+    - name: Run the backup service by hand
+      ansible.builtin.systemd_service:
+        name: restic-backup.service
+        state: started
+
+    - name: Read the snapshots
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/restic-env, snapshots, --json]
+      register: restic_backup_test_snapshots
+      changed_when: false
+
+    - name: Run the restore test with the upstream release
+      ansible.builtin.command: /usr/local/sbin/restic-restore-test
+      register: restic_backup_test_restore
+      changed_when: false
+
+    - name: Check the snapshot of the upstream release and the restore test
+      vars:
+        snapshots: "{{ restic_backup_test_snapshots.stdout | from_json | sort(attribute='time') }}"
+      ansible.builtin.assert:
+        that:
+          - snapshots[-1].program_version == 'restic ' ~ restic_backup_test_version
+          - >-
+            restic_backup_test_restore.stdout is search('passed: every file, folder and link of the snapshot')

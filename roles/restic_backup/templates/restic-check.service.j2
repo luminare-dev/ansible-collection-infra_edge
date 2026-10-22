@@ -1,0 +1,20 @@
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+# Checks the restic repository of this host (restic check{% if restic_backup_check_read_data_subset %}, reading {{ restic_backup_check_read_data_subset }} of the stored data{% endif %}). Started by
+# restic-check.timer, or by hand with "systemctl start restic-check.service". It waits for a
+# backup that runs at the same time (the check needs the repository to itself). A "%" of the
+# data subset is written "%%", because systemd reads "%" as a specifier.
+[Unit]
+Description=Check the restic repository of this host
+Wants=network-online.target
+After=network-online.target restic-backup.service
+
+[Service]
+Type=oneshot
+ExecStart={{ restic_backup_wrapper }} --retry-lock {{ restic_backup_retry_lock }} check{% if restic_backup_check_read_data_subset %} --read-data-subset={{ restic_backup_check_read_data_subset | replace('%', '%%') }}{% endif %}
+
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+
+{% include 'sandbox.j2' %}

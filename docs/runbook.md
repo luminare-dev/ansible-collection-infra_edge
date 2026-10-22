@@ -63,6 +63,48 @@ install on a host, and the failures of its CI and release automation.
 | **Mitigation** | Fix the cause and run `systemctl start mariadb-dump.service` once; it writes a complete set and then applies the retention. |
 | **Fix** | For a full disk, lower `mariadb_dump_retention_days` or move `mariadb_dump_dir` to a larger disk; for root's login see [Troubleshooting](troubleshooting.md). |
 
+## Backup recovery objectives
+
+With the defaults of `luminare.infra_edge.restic_backup`, the recovery point objective is about
+24 hours: one snapshot a night at 03:45 (host time), after the database dumps of 03:15, and a run
+missed while the host was off follows at the next boot. The restore test and an alert on
+`restic_backup_last_success_timestamp_seconds` treat a newest snapshot older than 26 hours
+(`restic_backup_max_age_hours`) as a failure. The recovery time objective is not measured against
+a real backend yet: in the Molecule containers, `restic-restore-test` restored the newest snapshot
+(139 and 168 files, about 0.5 MB, from a local repository) in 0.8 seconds. With a real backend it
+depends on the amount of data and the bandwidth, so run `restic-restore-test` on the host after
+the first nights and note the time it prints.
+
+## Nightly backup failed
+
+| | |
+|---|---|
+| **Meaning** | `systemctl status restic-backup.service` on a host with `luminare.infra_edge.restic_backup` shows `failed`, or the metric `restic_backup_last_success_timestamp_seconds` (or `/var/lib/restic-backup/last-success`) is older than 26 hours. |
+| **Impact** | No new snapshot, or one whose retention did not run: the snapshots of earlier nights stay, so a restore loses at most the changes since the last success. A failed `forget --prune` lets the repository grow. |
+| **Diagnosis** | `journalctl -u restic-backup.service -n 50` shows the failed step: `these paths do not exist` names a path of `restic_backup_paths` that is gone; `Fatal: unable to open repository`, `connection refused` or timeouts point to the backend or the network; `wrong password or no key found` to the password (or a changed repository); `repository is already locked` to another restic run (the job waits up to two hours) or a stale lock of a killed run; `Warning: at least one source file could not be read` (exit code 3) to a file that vanished or could not be read during the backup. `systemctl list-timers restic-backup.timer` shows the last and next run. |
+| **Mitigation** | Fix the cause and run `systemctl start restic-backup.service` once; it backs up, applies the retention and writes the status. For a stale lock (no other restic process runs on any host of the repository): `restic-env unlock`. |
+| **Fix** | Correct `restic_backup_paths`, the repository or its credentials in the inventory and run the playbook; the role tries the new settings before it writes them. |
+
+## Restore test failed
+
+| | |
+|---|---|
+| **Meaning** | `/usr/local/sbin/restic-restore-test` ended with `FAILED` and exit code 1. |
+| **Impact** | The newest snapshot is too old, or it could not be restored completely: a restore from it would also fail or miss files. |
+| **Diagnosis** | The line after `FAILED` names the reason: `the newest snapshot is ... hours old` means the nightly backup did not run or failed (see above); `restic restore failed` shows restic's error (repository, lock, disk space in `/var/tmp`); a list of differences names files that are missing or have another size, mode or owner in the restored copy. Run it with `--keep` to look at the copy. |
+| **Mitigation** | Run `systemctl start restic-backup.service` and then the test again; for differences, run `systemctl start restic-check.service` and read its journal. |
+| **Fix** | A repeated difference after a successful check points to a bug: open an issue with the output of the test (it names paths and sizes, no file content). |
+
+## Repository check failed
+
+| | |
+|---|---|
+| **Meaning** | `systemctl status restic-check.service` shows `failed` after the monthly run or a start by hand. |
+| **Impact** | The repository may hold damaged or missing data, so some snapshots may not restore. |
+| **Diagnosis** | `journalctl -u restic-check.service -n 50`: `repository is already locked` is a backup or prune that ran longer than two hours, `pack ... not found` or `ciphertext verification failed` point to damaged data in the backend. |
+| **Mitigation** | For a lock, start the check again later. For damaged data, keep the backend's data as it is and run `restic-env check --read-data` to see the extent. |
+| **Fix** | Follow restic's [troubleshooting guide](https://restic.readthedocs.io/en/stable/077_troubleshooting.html) (`restic repair index`, `restic repair snapshots`), then run a backup and the restore test. |
+
 ## Security updates are not installed
 
 | | |

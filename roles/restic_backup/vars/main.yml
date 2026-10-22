@@ -1,0 +1,69 @@
+# Internal values of luminare.infra_edge.restic_backup (not meant to be overridden).
+
+# Supported managed hosts: distribution -> major version, and the architecture names of the
+# upstream release files for each machine type that Ansible reports.
+restic_backup_supported_platforms:
+  Debian: ["13"]
+  Ubuntu: ["24"]
+restic_backup_architectures:
+  x86_64: amd64
+  aarch64: arm64
+
+# Installation (docs/adr/0018). The package installs /usr/bin/restic; the upstream binary goes to
+# /usr/local/bin/restic and leaves a package that is already installed alone. Everything else
+# runs restic through the wrapper, which names the binary of the chosen method.
+restic_backup_package: restic
+restic_backup_package_binary: /usr/bin/restic
+restic_backup_upstream_binary: /usr/local/bin/restic
+restic_backup_restic: >-
+  {{ restic_backup_upstream_binary if restic_backup_install_method == 'binary' else restic_backup_package_binary }}
+restic_backup_release_url: https://github.com/restic/restic/releases/download
+# The release file is downloaded here, decompressed to restic_backup_upstream_binary and removed.
+restic_backup_download_dir: /var/cache/luminare-restic-download
+
+# Settings of the repository: root-only files read by the wrapper (docs/adr/0019).
+restic_backup_config_dir: /etc/restic
+restic_backup_env_file: /etc/restic/env
+restic_backup_password_file: /etc/restic/password
+restic_backup_exclude_file: /etc/restic/excludes
+restic_backup_cache_dir: /var/cache/restic-backup
+# Variables that the role sets itself, so restic_backup_env may not set them.
+restic_backup_reserved_env_pattern: '^RESTIC_(REPOSITORY|PASSWORD|CACHE_DIR)'
+
+# Scripts, units and the status of the last run (docs/adr/0019, docs/adr/0020)
+restic_backup_wrapper: /usr/local/sbin/restic-env
+restic_backup_script: /usr/local/sbin/restic-backup
+restic_backup_restore_test_script: /usr/local/sbin/restic-restore-test
+restic_backup_unit_dir: /etc/systemd/system
+restic_backup_state_dir: /var/lib/restic-backup
+restic_backup_status_file: /var/lib/restic-backup/last-success
+restic_backup_metric_file: restic_backup.prom
+# How long the jobs wait for a lock that another restic run on the repository holds (the backup,
+# the monthly check, a restore test or a run by hand), instead of failing at once.
+restic_backup_retry_lock: 2h
+
+# A local repository (a path, or local:<path>) is written by the backup service, so the sandbox of
+# the units must allow it; empty for every other backend.
+restic_backup_local_repository: >-
+  {{ restic_backup_repository[6:] if restic_backup_repository.startswith('local:')
+     else (restic_backup_repository if restic_backup_repository.startswith('/') else '') }}
+
+# Input checks (assert.yml). Values end up in a shell script, a Python script, unit files and the
+# environment file, so they must match strict patterns. They end in \Z, not $: in Python's regular
+# expressions (Ansible's match test) $ also matches before a final line break.
+# A repository: one of restic's backends, or an absolute path; no spaces or control characters.
+restic_backup_repository_pattern: '^(/|(local|sftp|rest|s3|b2|azure|gs|swift|rclone):)[^\s]+\Z'
+# An absolute path whose parts start with a letter, digit or _ (no "." or ".." parts), or "/".
+restic_backup_path_pattern: '^(/|(/[A-Za-z0-9_][A-Za-z0-9._@+-]*)+)\Z'
+# Folders the role may not take over (the textfile folder and a local repository are written
+# by the backup service; the restore test creates its folder inside its folder).
+restic_backup_dir_forbidden_pattern: '^/(etc|usr|bin|sbin|lib|lib64|boot|dev|proc|run|sys)?(/|$)'
+restic_backup_env_name_pattern: '^[A-Z_][A-Z0-9_]*\Z'
+# An exclude pattern: one line of the exclude file (restic trims spaces at both ends of a line and
+# skips lines that start with #), so no line break, no comment and no space at either end.
+restic_backup_exclude_pattern: '^[^#\s\x00-\x1f\x7f]([^\x00-\x1f\x7f]*[^\s\x00-\x1f\x7f])?\Z'
+restic_backup_version_pattern: '^[0-9]+\.[0-9]+\.[0-9]+\Z'
+restic_backup_sha256_pattern: '^[0-9a-f]{64}\Z'
+restic_backup_oncalendar_pattern: '^[A-Za-z0-9*:,./~ -]+\Z'
+# --read-data-subset of restic check: a percentage (5%) or a part n/t (1/12); empty: no data read.
+restic_backup_read_data_subset_pattern: '^([0-9]+(\.[0-9]+)?%|[1-9][0-9]*/[1-9][0-9]*)?\Z'

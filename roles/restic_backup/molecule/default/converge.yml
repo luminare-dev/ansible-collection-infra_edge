@@ -1,0 +1,11 @@
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    # With the values of molecule.yml: a local repository, /etc and the test data, an exclude
+    # pattern, the metric file and a check that reads all data. Defaults otherwise: the
+    # distribution's package, the nightly and monthly timers, the retention of 7 daily, 4 weekly
+    # and 6 monthly snapshots, and a restore test of the whole snapshot with a 26-hour age limit.
+    - name: Apply luminare.infra_edge.restic_backup
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.restic_backup

@@ -1,0 +1,42 @@
+# Defaults of luminare.infra_edge.restic_backup. Every variable is described, with its type, in
+# meta/argument_specs.yml; the tables in README.md and docs/configuration.md are generated from it.
+
+# Installation: the distribution's package (restic 0.18 on Debian 13, 0.16 on Ubuntu 24.04), or
+# the pinned upstream release, checked against the SHA-256 per architecture (the "SHA256SUMS" file
+# of the GitHub release, files restic_<version>_linux_<arch>.bz2; docs/adr/0018).
+restic_backup_install_method: package
+restic_backup_version: "0.19.1"
+restic_backup_binary_sha256:
+  amd64: f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+  arm64: a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+
+# Repository: where the snapshots go, its password and the backend credentials. All three come
+# from an encrypted source (Ansible Vault, SOPS); the role writes them to root-only files.
+restic_backup_repository: ""
+restic_backup_password: ""
+restic_backup_env: {}
+
+# What is backed up, and how many snapshots forget --prune keeps
+restic_backup_paths:
+  - /etc
+  - /var/backups
+restic_backup_exclude: []
+restic_backup_keep:
+  daily: 7
+  weekly: 4
+  monthly: 6
+
+# Timers: the backup every night after the dumps of the mariadb role (03:15), the repository
+# check once a month
+restic_backup_timers_enabled: true
+restic_backup_oncalendar: "*-*-* 03:45:00"
+restic_backup_check_oncalendar: monthly
+restic_backup_check_read_data_subset: ""
+
+# Monitoring: the node_exporter textfile collector folder for the metric (empty: no metric file)
+restic_backup_textfile_dir: ""
+
+# Restore test (/usr/local/sbin/restic-restore-test)
+restic_backup_max_age_hours: 26
+restic_backup_restore_test_include: []
+restic_backup_restore_test_dir: /var/tmp

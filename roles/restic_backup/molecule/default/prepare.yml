@@ -1,0 +1,67 @@
+# Test data for the backups in /srv/molecule-data:
+#   notes.txt              a text file (root, 0644)
+#   reports/summary.csv    a file in a sub-folder
+#   reports/latest.csv     a symbolic link to summary.csv
+#   private.txt            a file of another user with mode 0600, which root can read only with
+#                          CAP_DAC_READ_SEARCH (the only capability of the sandboxed service)
+#   scratch.tmp            a file that the exclude pattern of molecule.yml leaves out
+#   cache/                 a folder tagged with CACHEDIR.TAG, which --exclude-caches leaves out
+#   bulk.bin               4 MiB of random data (not compressible), which verify.yml deletes
+#                          before the second backup, so that prune must free its space
+# The units of the role wait for network-online.target, so the wait-online service of
+# systemd-networkd, which manages no interface in the containers, is masked.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Mask systemd-networkd-wait-online (container network, not configured by networkd)
+      ansible.builtin.systemd_service:
+        name: systemd-networkd-wait-online.service
+        masked: true
+
+    - name: Create the folders of the test data
+      ansible.builtin.file:
+        path: "{{ restic_backup_test_data }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: ["", reports, cache]
+
+    - name: Write the test files
+      ansible.builtin.copy:
+        dest: "{{ restic_backup_test_data }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+        mode: "{{ item.mode | default('0644') }}"
+      loop:
+        - name: notes.txt
+          content: "Synthetic test data of the Molecule scenario restic_backup.\n"
+        - name: reports/summary.csv
+          content: "day,requests\n2026-10-21,1200\n2026-10-22,1350\n"
+        - name: private.txt
+          content: "Readable by its owner only.\n"
+          owner: nobody
+          group: nogroup
+          mode: "0600"
+        - name: scratch.tmp
+          content: "left out by the exclude pattern\n"
+        - name: cache/CACHEDIR.TAG
+          content: |
+            Signature: 8a477f597d28d172789f06886806bc55
+            # A cache folder: restic --exclude-caches leaves it out.
+        - name: cache/blob.bin
+          content: "cached data\n"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Link reports/latest.csv to summary.csv
+      ansible.builtin.file:
+        src: summary.csv
+        dest: "{{ restic_backup_test_data }}/reports/latest.csv"
+        state: link
+        force: true
+
+    - name: Write 4 MiB of random data
+      ansible.builtin.command:
+        cmd: dd if=/dev/urandom of={{ restic_backup_test_data }}/bulk.bin bs=1M count=4 status=none
+        creates: "{{ restic_backup_test_data }}/bulk.bin"

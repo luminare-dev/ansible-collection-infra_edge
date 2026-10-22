@@ -1,0 +1,56 @@
+# Molecule scenario of luminare.infra_edge.restic_backup. The driver and both platforms (Debian 13
+# and Ubuntu 24.04) come from .config/molecule/config.yml; run it with
+#   cd roles/restic_backup && export MOLECULE_ROLE=restic_backup && molecule test
+# The repository is a local folder in the instance, so no backend, account or credential is
+# needed and nothing leaves the instance except the package downloads and, in side_effect.yml,
+# the download of the pinned upstream release from GitHub. prepare.yml creates test data (a file
+# of another user, a symbolic link, a file that the exclude pattern skips, a cache folder and a
+# large file). converge.yml applies the role with the distribution's package. verify.yml runs the
+# backup, checks the snapshot, deletes files and a link and restores them, runs the restore test,
+# deletes the large file and runs the backup again (forget --prune must remove the first snapshot
+# and its data), and runs the monthly check. side_effect.yml tries a wrong password (the role must
+# stop and change nothing) and then switches to the upstream release with the timers off;
+# verify_binary.yml checks that release against the same repository. Synthetic password only.
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # The role's variables for converge.yml; side_effect.yml overrides some of them.
+        restic_backup_repository: /srv/restic-repo
+        restic_backup_password: molecule-restic-only
+        restic_backup_env:
+          # A value with a quote, a dollar sign, backquotes, a backslash and spaces: the
+          # environment file must hand it to restic unchanged.
+          RESTIC_BACKUP_MOLECULE_VALUE: "it's $HOME `id` \\ value"
+        restic_backup_paths:
+          - /etc
+          - /srv/molecule-data
+        restic_backup_exclude:
+          - /srv/molecule-data/*.tmp
+        # The default textfile folder of Debian's prometheus-node-exporter package; prepare.yml
+        # leaves it out, so the role must create it.
+        restic_backup_textfile_dir: /var/lib/prometheus/node-exporter
+        # Keep only the newest snapshot, so the second run in verify.yml must remove the first one
+        # (restic 0.17 and later also keep the oldest snapshot while fewer snapshots exist than a
+        # policy such as the default allows, so the default would keep both). The edge scenario
+        # runs the default policy.
+        restic_backup_keep:
+          last: 1
+        restic_backup_check_read_data_subset: 100%
+        # The test data of prepare.yml.
+        restic_backup_test_data: /srv/molecule-data
+scenario:
+  name: default
+  # The shared sequence (.config/molecule/config.yml) plus the binary check after verify.
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - side_effect
+    - verify verify_binary.yml
+    - destroy

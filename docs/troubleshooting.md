@@ -214,6 +214,49 @@ not match the client's address (`Access denied for user 'app'@'192.0.2.13'`).
 `mariadb_allowed_app_hosts` and the account's `host` together (see
 [Application hosts](../roles/mariadb/README.md#application-hosts)) and run the playbook again.
 
+## The restic_backup role stops with "Set restic_backup_repository"
+
+**Cause:** `restic_backup_repository` or `restic_backup_password` is empty (the defaults), the
+repository is not an absolute path or `<backend>:<location>` of a restic backend, or one of them
+contains a space or a line break. With the edge playbook this happens when
+`edge_restic_backup_enabled` is true and the inventory has no repository for the host.
+
+**Fix:** set both for the host, the password from the vault file, for example
+`restic_backup_repository: s3:https://s3.example.com/edge-backups/edge-01` in the inventory, or
+set `edge_restic_backup_enabled: false` to leave the backups out.
+
+## The restic_backup role stops with "The repository exists, but restic_backup_password does not open it"
+
+**Cause:** the repository at `restic_backup_repository` was created with another password, or the
+address points to the repository of another host. The role tried the new settings before writing
+them, so the settings on the host and a running backup job are unchanged.
+
+**Fix:** put the password the repository was created with into the vault file. To change the
+password of a repository, add a key with the new password first (`restic-env key add`), then
+change the vault value and run the playbook, then remove the old key (`restic-env key list`,
+`restic-env key remove <id>`).
+
+## The restic_backup role stops with "restic cannot open the repository"
+
+**Cause:** restic could not reach the backend or was refused by it: a wrong address, wrong or
+missing credentials in `restic_backup_env`, a firewall on the way, or a backend that is down. The
+message ends with restic's own error. The settings on the host were not changed.
+
+**Fix:** check the address and the credentials, and try them by hand in a root shell on the
+host: export the backend's variables (for example `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`), then run `restic -r <repository> cat config` and enter the password. For
+an SFTP server, add the server's host key to `/root/.ssh/known_hosts` and the client key to
+`/root/.ssh` first: restic cannot answer the SSH host key question.
+
+## restic-backup.service fails with "these paths do not exist"
+
+**Cause:** a path of `restic_backup_paths` is missing on the host, for example
+`/var/backups/mariadb` on a host without the `mariadb` role. The script stops before restic runs,
+so the status file keeps the last successful time.
+
+**Fix:** remove the path from `restic_backup_paths` (the default `/var/backups` covers the dumps
+of `mariadb` on hosts that have it) or create it, then start the service again.
+
 ## The role 'devsec.hardening.ssh_hardening' was not found
 
 ```text

@@ -1,0 +1,188 @@
+#!/usr/bin/python3
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+"""Restore test of the restic backups of this host.
+
+1. Finds the newest snapshot of this host and fails when it is older than the age limit
+   (restic_backup_max_age_hours: the nightly backup did not run or failed).
+2. Restores it{% if restic_backup_restore_test_include %} (the paths {{ restic_backup_restore_test_include | join(', ') }}){% endif %} into a new temporary folder in {{ restic_backup_restore_test_dir }} with
+   "restic restore --verify", which reads every restored file again and compares its content
+   with the repository.
+3. Compares the restored copy with the listing of the snapshot: every file, folder and symbolic
+   link must be there with its type, every file with its size, and every file and folder with
+   its permissions and owner (other kinds, such as device files, are counted but not compared).
+4. Removes the temporary folder (unless --keep) and prints how long the restore took.
+
+Run it as root, on the host or from the control node, for example:
+    ansible <hosts> --become -m ansible.builtin.command -a {{ restic_backup_restore_test_script }}
+Exit code 0: passed; 1: failed (the reason is printed); 2: wrong use.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+RESTIC = {{ restic_backup_wrapper | to_json }}
+RETRY_LOCK = {{ restic_backup_retry_lock | to_json }}
+MAX_AGE_HOURS = {{ restic_backup_max_age_hours | int }}
+INCLUDE = {{ restic_backup_restore_test_include | to_json }}
+RESTORE_DIR = {{ restic_backup_restore_test_dir | to_json }}
+PREFIX = "restic-restore-test-"
+SHOWN_DIFFERENCES = 20
+# restic writes times as RFC 3339 with nanoseconds, for example 2026-10-22T03:45:01.123456789Z.
+TIME_RE = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)")
+
+
+class TestFailed(Exception):
+    """The restore test failed for the reason in the message."""
+
+
+def log(message: str) -> None:
+    print(f"restic-restore-test: {message}", flush=True)
+
+
+def require_root() -> bool:
+    if os.geteuid() != 0:
+        print("restic-restore-test: run it as root (the repository settings are readable by root only)",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def restic(*args: str) -> str:
+    """Run restic through the wrapper of the role and return its output."""
+    result = subprocess.run([RESTIC, "--retry-lock", RETRY_LOCK, *args], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise TestFailed(f"restic {args[0]} failed with exit code {result.returncode}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def parse_time(text: str) -> datetime.datetime:
+    match = TIME_RE.fullmatch(text)
+    if not match:
+        raise TestFailed(f"unexpected snapshot time {text!r}")
+    fraction = (match.group(2) or ".0")[:7]
+    zone = "+00:00" if match.group(3) == "Z" else match.group(3)
+    return datetime.datetime.fromisoformat(match.group(1) + fraction + zone)
+
+
+def included(path: str) -> bool:
+    return not INCLUDE or any(path == top or path.startswith(top.rstrip("/") + "/") for top in INCLUDE)
+
+
+def compare(nodes: list, target: str) -> tuple[list, dict]:
+    """Compare the restored copy in target with the nodes of the snapshot listing."""
+    differences = []
+    counts = {"files": 0, "bytes": 0, "folders": 0, "links": 0, "other": 0}
+    for node in nodes:
+        path, kind = node["path"], node["type"]
+        if kind not in ("file", "dir", "symlink"):
+            counts["other"] += 1
+            continue
+        counts[{"file": "files", "dir": "folders", "symlink": "links"}[kind]] += 1
+        counts["bytes"] += node.get("size", 0) if kind == "file" else 0
+        try:
+            info = os.lstat(target + path)
+        except FileNotFoundError:
+            differences.append(f"{path}: missing in the restored copy")
+            continue
+        if kind == "symlink":
+            # The listing of restic has no link target, so a link is checked for its type only.
+            if not stat.S_ISLNK(info.st_mode):
+                differences.append(f"{path}: not a symbolic link in the restored copy")
+            continue
+        if kind == "file" and not stat.S_ISREG(info.st_mode):
+            differences.append(f"{path}: not a file in the restored copy")
+            continue
+        if kind == "dir" and not stat.S_ISDIR(info.st_mode):
+            differences.append(f"{path}: not a folder in the restored copy")
+            continue
+        if kind == "file" and info.st_size != node.get("size", 0):
+            differences.append(f"{path}: {info.st_size} bytes instead of {node.get('size', 0)}")
+        # restic stores the mode as Go's file mode: the permission bits are the lowest nine bits.
+        if stat.S_IMODE(info.st_mode) & 0o777 != node["mode"] & 0o777:
+            differences.append(f"{path}: mode {stat.S_IMODE(info.st_mode) & 0o777:03o} instead of {node['mode'] & 0o777:03o}")
+        if (info.st_uid, info.st_gid) != (node.get("uid", 0), node.get("gid", 0)):
+            differences.append(f"{path}: owner {info.st_uid}:{info.st_gid} instead of {node.get('uid', 0)}:{node.get('gid', 0)}")
+    return differences, counts
+
+
+def run(args: argparse.Namespace) -> None:
+    host = os.uname().nodename
+    started = time.monotonic()
+
+    snapshots = json.loads(restic("snapshots", "--json", "--host", host) or "[]")
+    if not snapshots:
+        raise TestFailed(f"the repository has no snapshot of host {host}")
+    newest = max(snapshots, key=lambda snapshot: parse_time(snapshot["time"]))
+    taken = parse_time(newest["time"])
+    age_hours = (datetime.datetime.now(datetime.timezone.utc) - taken).total_seconds() / 3600
+    short_id = newest.get("short_id") or newest["id"][:8]
+    log(f"newest snapshot {short_id} of host {host}: {taken.astimezone(datetime.timezone.utc):%Y-%m-%d %H:%M:%S} UTC, "
+        f"{age_hours:.1f} hours old (limit {args.max_age_hours:g}), paths {' '.join(newest['paths'])}")
+    if age_hours > args.max_age_hours:
+        raise TestFailed(f"the newest snapshot is {age_hours:.1f} hours old, more than {args.max_age_hours:g}: the "
+                         "backup did not run or failed (journalctl -u restic-backup.service)")
+
+    nodes = []
+    for line in restic("ls", "--json", newest["id"]).splitlines():
+        if line.strip():
+            node = json.loads(line)
+            if node.get("struct_type") == "node" and included(node["path"]):
+                nodes.append(node)
+    if not nodes:
+        raise TestFailed(f"snapshot {short_id} holds nothing under {' '.join(INCLUDE)}")
+
+    target = tempfile.mkdtemp(prefix=PREFIX, dir=RESTORE_DIR)
+    try:
+        restore = ["restore", newest["id"], "--target", target, "--verify"]
+        for path in INCLUDE:
+            restore += ["--include", path]
+        restore_started = time.monotonic()
+        restic(*restore)
+        restore_seconds = time.monotonic() - restore_started
+        differences, counts = compare(nodes, target)
+        log(f"restored {counts['files']} files ({counts['bytes']} bytes), {counts['folders']} folders, "
+            f"{counts['links']} links and {counts['other']} other entries into {target} in {restore_seconds:.1f} s; "
+            "restic verified the content of every restored file")
+        if differences:
+            shown = differences[:SHOWN_DIFFERENCES]
+            more = len(differences) - len(shown)
+            raise TestFailed(f"{len(differences)} difference(s) between the snapshot and the restored copy:\n  "
+                             + "\n  ".join(shown) + (f"\n  ... and {more} more" if more else ""))
+    finally:
+        if args.keep:
+            log(f"kept the restored copy in {target}")
+        else:
+            shutil.rmtree(target, ignore_errors=True)
+    scope = f"under {' '.join(INCLUDE)} " if INCLUDE else ""
+    log(f"passed: every file, folder and link of the snapshot {scope}is in the restored copy with its type, size, "
+        f"permissions and owner ({time.monotonic() - started:.1f} s in all)")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--max-age-hours", type=float, default=MAX_AGE_HOURS,
+                        help=f"fail when the newest snapshot is older than this (default {MAX_AGE_HOURS})")
+    parser.add_argument("--keep", action="store_true", help="keep the restored copy and print its folder")
+    args = parser.parse_args(argv)
+    if not require_root():
+        return 2
+    try:
+        run(args)
+    except TestFailed as error:
+        print(f"restic-restore-test: FAILED: {error}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,6 +1,7 @@
 # 0017. A collection playbook with a tested example inventory instead of an all-in-one role
 
-- **Status:** accepted
+- **Status:** accepted; amended by [ADR 0021](0021-opt-in-switch-for-the-backup-role-in-the-edge-playbook.md)
+  (one switch, for the backup role)
 - **Date:** 2026-10-22
 
 ## Context

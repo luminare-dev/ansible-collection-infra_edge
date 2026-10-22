@@ -9,19 +9,23 @@ a unit test fails when a table here or in a role README is out of date.
 
 ## Playbook luminare.infra_edge.edge
 
-[`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the four roles below in this order:
-`base`, `cloudflared`, `nginx`, `mariadb`. It has no variables of its own except the host pattern,
-and passes nothing to the roles: every value comes from the inventory, as role variables.
-[`examples/edge/`](../examples/edge/) is a complete inventory for one host (tested by the Molecule
-scenario `edge`); a unit test fails when it sets a variable that none of the four roles has.
+[`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the roles below in this order:
+`base`, `cloudflared`, `nginx`, `mariadb` and, when switched on, `restic_backup`. Its own
+variables are the host pattern and the switch for the backups; it passes nothing to the roles:
+every value comes from the inventory, as role variables. [`examples/edge/`](../examples/edge/) is
+a complete inventory for one host, with the backups switched on (tested by the Molecule scenario
+`edge`); a unit test fails when it sets a variable that neither the playbook nor one of its roles
+has.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `edge_hosts` | str | `edge` | Host pattern of the play: an inventory group, a host or any pattern, for example `-e edge_hosts=web`. `--limit` narrows it further. |
+| `edge_restic_backup_enabled` | bool | `false` | Also run `restic_backup` after the other roles. Off by default, so an inventory without backup settings sets up the same host as before; switching it off later leaves the installed backup job running (set `restic_backup_timers_enabled: false` and run the playbook once more with the switch on to stop it). |
 
 Each role's tasks carry the role name as a tag, so `--skip-tags mariadb` runs the playbook
-without the database role. With `--tags`, the input checks of all four roles still run (tag
-`always`), so their required values (SSH keys, tunnel token, database passwords) must be set.
+without the database role. With `--tags`, the input checks of all roles that run still run (tag
+`always`), so their required values (SSH keys, tunnel token, database passwords, the backup
+repository and its password) must be set.
 
 ## base
 
@@ -154,6 +158,41 @@ zstd dumps per database into `/var/backups/mariadb` with a retention in days, an
 | `mariadb_allowed_app_hosts` | list of str | `[]` | IPv4 and IPv6 addresses or CIDRs of the application hosts that may reach port 3306 through the firewall of the base role (never /0). The server must also listen on an address they reach (mariadb_bind_address), and their accounts need a matching host. |
 | `mariadb_firewall_manage` | bool | `false` | false writes /etc/nftables.d/30-mariadb.nft only when /etc/nftables.d exists (the firewall of the base role); true also creates the directory (nftables and /etc/nftables.conf must exist). The file holds accept rules for port 3306 from mariadb_allowed_app_hosts and is removed when the list is empty; a running nftables is restarted after a change. |
 <!-- argument-specs:mariadb:end -->
+
+## restic_backup
+
+[`luminare.infra_edge.restic_backup`](../roles/restic_backup/README.md) backs up the host every
+night with restic: the distribution's package (or a pinned upstream release checked against its
+SHA-256), the repository, its password and the backend credentials in root-only files under
+`/etc/restic`, the repository created if it does not exist, a sandboxed backup service with a
+timer at 03:45 (after the dumps of `mariadb`), `forget --prune` with a retention for the snapshots
+of the host, a monthly `restic check`, the time of the last successful run in a status file and
+optionally as a node_exporter metric, and a restore test. `restic_backup_repository` and
+`restic_backup_password` must be set; the role stops before any change otherwise. When the
+repository exists but the password does not open it, or the backend refuses the settings, the role
+stops before it writes them, so the settings files of a working backup stay as they are.
+
+<!-- argument-specs:restic_backup:begin -->
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `restic_backup_install_method` | str: `package`, `binary` | `package` | package installs the distribution's restic (0.18 on Debian 13, 0.16 on Ubuntu 24.04, with the distribution's security updates); binary installs the upstream release restic_backup_version as /usr/local/bin/restic after checking its SHA-256 (restic_backup_binary_sha256). An installed package stays installed with binary; the jobs use the binary of the chosen method. |
+| `restic_backup_version` | str | `0.19.1` | Upstream release for restic_backup_install_method binary (x.y.z). Change it together with restic_backup_binary_sha256. |
+| `restic_backup_binary_sha256` | dict | `{"amd64": "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c", "arm64": "a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465"}` | SHA-256 of the release file per architecture (amd64, arm64; for example `restic_0.19.1_linux_amd64.bz2`), as listed in the signed SHA256SUMS file of the release. Used only with the binary method; the role stops on a host whose architecture has no entry, and when the downloaded file does not match. |
+| `restic_backup_repository` | str | `""` | Required. The restic repository of this host, for example `s3:https://s3.example.com/backups/edge-01`, `sftp:backup@example.com:/srv/restic/edge-01`, `rest:https://backup.example.com/edge-01/` or a local path such as `/srv/restic-repo` (a local path is for tests or a second disk, not an off-host backup). Give every host its own repository. |
+| `restic_backup_password` | str | `""` | Required. Password of the repository, written to /etc/restic/password (root only). Without it the snapshots cannot be read: keep a copy outside the host and the repository. Keep it encrypted (Ansible Vault, SOPS); no line break and no spaces at either end. |
+| `restic_backup_env` | dict | `{}` | Environment variables for the backend, written to /etc/restic/env (root only), for example AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for an S3 bucket. Names in capitals; not the `RESTIC_REPOSITORY*`, `RESTIC_PASSWORD*` and `RESTIC_CACHE_DIR` variables, which the role sets itself. Keep the values encrypted (Ansible Vault, SOPS). |
+| `restic_backup_paths` | list of str | `["/etc", "/var/backups"]` | Absolute paths to back up (the default includes /var/backups/mariadb, the dumps of the mariadb role). Every path must exist when the backup runs: a missing path fails the run instead of being skipped. Folders tagged as caches (CACHEDIR.TAG) are left out. |
+| `restic_backup_exclude` | list of str | `[]` | restic exclude patterns, one per line of /etc/restic/excludes, for example `/var/backups/*.tmp` or `*.log`. restic replaces `$NAME` with the environment variable NAME; write `$$` for a dollar sign. |
+| `restic_backup_keep` | dict | `{"daily": 7, "weekly": 4, "monthly": 6}` | Retention of restic forget --prune after every backup, applied to the snapshots of this host only: how many of the newest snapshots to keep per kind (last, hourly, daily, weekly, monthly, yearly; at least one kind). The default keeps one snapshot per day for 7 days, per week for 4 weeks and per month for 6 months. |
+| `restic_backup_timers_enabled` | bool | `true` | Run the backup and check timers. False stops and disables both; the services stay, so a backup can still be started by hand, and the repository is kept. |
+| `restic_backup_oncalendar` | str | `*-*-* 03:45:00` | When the backup runs (systemd OnCalendar expression, local time of the host); the default follows the dumps of the mariadb role at 03:15. A run missed while the host was off follows at the next boot. |
+| `restic_backup_check_oncalendar` | str | `monthly` | When restic check runs (systemd OnCalendar expression; monthly is the first day of each month at 00:00). A run missed while the host was off follows at the next boot. |
+| `restic_backup_check_read_data_subset` | str | `""` | Part of the stored data that the monthly check also reads and verifies (restic check --read-data-subset), as a percentage (for example 5%, a random part on each run) or a part n/t (for example 1/12). Empty checks the structure of the repository without reading the data. |
+| `restic_backup_textfile_dir` | str | `""` | Folder of the node_exporter textfile collector (for example /var/lib/prometheus/node-exporter of Debian's prometheus-node-exporter package). When set, every successful run writes restic_backup.prom with the metric restic_backup_last_success_timestamp_seconds there; the role creates the folder if it is missing. Empty writes no metric. |
+| `restic_backup_max_age_hours` | int | `26` | The restore test fails when the newest snapshot of the host is older than this many hours. The default allows one nightly run plus two hours; an alert on the metric can use the same limit. |
+| `restic_backup_restore_test_include` | list of str | `[]` | Paths that the restore test restores and compares, each inside one of restic_backup_paths. Empty restores the whole snapshot, which needs that much free space in restic_backup_restore_test_dir. |
+| `restic_backup_restore_test_dir` | str | `/var/tmp` | Existing folder in which the restore test creates its temporary folder (mode 0700); the folder is removed after the test. |
+<!-- argument-specs:restic_backup:end -->
 
 ## Secrets
 

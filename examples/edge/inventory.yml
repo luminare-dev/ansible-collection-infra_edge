@@ -15,3 +15,5 @@ all:
           # The address on the private network 192.0.2.0/24 where the application host
           # 192.0.2.13 (group_vars/edge/main.yml) reaches the database.
           mariadb_bind_address: 192.0.2.10
+          # The restic repository of this host: its own path in an S3-compatible bucket.
+          restic_backup_repository: s3:https://s3.example.com/edge-backups/edge-01

@@ -39,6 +39,18 @@ that a new release never arrives unplanned.
 
 ## Version notes
 
+### 0.2.0
+
+Adds the role `restic_backup` and the switch `edge_restic_backup_enabled` of the playbook
+`luminare.infra_edge.edge`, which is off by default: an inventory of 0.1.0 sets up the same host.
+
+- The example inventory in `examples/edge/` now switches the backups on. A copy of the new example
+  needs `restic_backup_repository` per host in `inventory.yml` and the three backup values in the
+  vault file (see the [example's README](../examples/edge/README.md)), or
+  `edge_restic_backup_enabled: false`.
+- Switching the backups off later does not remove them from a host: run the playbook once with
+  `restic_backup_timers_enabled: false` (and the switch still on) to stop the timers.
+
 ### 0.1.0
 
 The first release; there is nothing to migrate from. On a host that was set up before, by hand or

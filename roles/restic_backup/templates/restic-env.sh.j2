@@ -1,0 +1,22 @@
+#!/bin/bash
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+# Runs restic with the repository of this host: the settings in {{ restic_backup_env_file }} (the
+# repository, the password file, the cache folder and the backend credentials), which only root
+# can read. The backup and check services, the restore test and the role use it; use it by hand
+# the same way, for example:
+#   restic-env snapshots
+#   restic-env restore latest --target /var/tmp/restore --include /etc/hostname
+# RESTIC_* variables of the caller are dropped first, so the settings file always wins.
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "restic-env: run it as root (the settings in {{ restic_backup_env_file }} are readable by root only)" >&2
+  exit 2
+fi
+
+unset "${!RESTIC_@}"
+set -a
+# shellcheck source=/dev/null
+. {{ restic_backup_env_file | quote }}
+set +a
+exec {{ restic_backup_restic | quote }} "$@"

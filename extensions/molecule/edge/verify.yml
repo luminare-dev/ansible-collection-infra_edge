@@ -1,4 +1,4 @@
-# Checks of the four roles together on one converged instance. The hosts outside are addresses in
+# Checks of the five roles together on one converged instance. The hosts outside are addresses in
 # the network namespace "lan" (prepare.yml); their packets cross the firewall that the base role
 # loaded, with the drop-ins of the other roles. Commands only read state; the requests add lines
 # to the logs.
@@ -230,3 +230,70 @@
           - >-
             edge_test_cloudflared_listeners.stdout_lines | map('split') | map(attribute=3) | list
             == ['127.0.0.1:2000']
+
+    # The backup: the dumps of mariadb and the configuration of the host go into the repository
+    - name: Read the timers of the dumps and of the backup
+      ansible.builtin.command:
+        argv: [systemctl, show, --property=TimersCalendar, mariadb-dump.timer, restic-backup.timer]
+      register: edge_test_backup_timers
+      changed_when: false
+
+    # Started together, as after a boot that missed both nights: restic-backup.service is ordered
+    # after mariadb-dump.service, so the snapshot holds the dumps of this run. One systemctl call
+    # puts both units into one transaction, which the systemd module (one unit per call) cannot.
+    - name: Start the dump and the backup service together
+      ansible.builtin.command:  # noqa: command-instead-of-module
+        argv: [systemctl, start, mariadb-dump.service, restic-backup.service]
+      changed_when: true
+
+    - name: Read the results of both services and the journal of the backup
+      ansible.builtin.command: "{{ item }}"
+      register: edge_test_backup_run
+      changed_when: false
+      loop:
+        - systemctl show --property=Result,ExecMainExitTimestampMonotonic mariadb-dump.service
+        - systemctl show --property=Result,ExecMainStartTimestampMonotonic restic-backup.service
+        - journalctl --unit restic-backup.service --output cat --no-pager
+
+    - name: Read the listing of the snapshot
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/restic-env, ls, --json, latest]
+      register: edge_test_backup_listing
+      changed_when: false
+
+    - name: Run the restore test
+      ansible.builtin.command: /usr/local/sbin/restic-restore-test
+      register: edge_test_restore
+      changed_when: false
+
+    - name: Check the order of the jobs, the snapshot with the dumps and the restore test
+      vars:
+        dump_lines: "{{ edge_test_backup_run.results[0].stdout_lines }}"
+        backup_lines: "{{ edge_test_backup_run.results[1].stdout_lines }}"
+        dump_exit: >-
+          {{ dump_lines | select('match', '^ExecMainExitTimestampMonotonic=') | first
+             | regex_replace('^[^=]*=', '') }}
+        backup_start: >-
+          {{ backup_lines | select('match', '^ExecMainStartTimestampMonotonic=') | first
+             | regex_replace('^[^=]*=', '') }}
+        stamp: '[0-9]{8}T[0-9]{6}Z'
+        dump_files: "{{ snapshot_paths | select('match', '^/var/backups/mariadb/') | map('basename') | list }}"
+        snapshot_paths: >-
+          {{ edge_test_backup_listing.stdout_lines | map('from_json') | selectattr('struct_type', 'equalto', 'node')
+             | map(attribute='path') | list }}
+      ansible.builtin.assert:
+        that:
+          - edge_test_backup_timers.stdout is search('OnCalendar=\*-\*-\* 03:15:00 ;')
+          - edge_test_backup_timers.stdout is search('OnCalendar=\*-\*-\* 03:45:00 ;')
+          - "'Result=success' in dump_lines and 'Result=success' in backup_lines"
+          - backup_start | int >= dump_exit | int > 0
+          - dump_files | select('match', '^app-' ~ stamp ~ '\.sql\.zst$') | list | length >= 1
+          - dump_files | select('match', '^system-users-' ~ stamp ~ '\.sql\.zst$') | list | length >= 1
+          - "'/etc/nftables.conf' in snapshot_paths"
+          - >-
+            edge_test_backup_run.results[2].stdout
+            is search('Applying Policy: keep 7 daily, 4 weekly, 6 monthly snapshots')
+          - >-
+            edge_test_restore.stdout
+            is search('passed: every file, folder and link of the snapshot is in the restored copy')
+        fail_msg: "{{ edge_test_backup_run.results[2].stdout_lines[-15:] | join('\n') }}"

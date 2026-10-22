@@ -1,0 +1,459 @@
+# Checks of the converged instance: the package, the settings files and what restic reads from
+# them, the initialised repository, the timers and the sandbox of the services; then a run of the
+# backup service with its snapshot, status file and metric, files deleted and restored from the
+# snapshot, the restore test (passing, and failing with an age limit of 0 hours), a second run
+# whose retention removes the first snapshot and whose prune frees the data of a deleted file,
+# the monthly check and the journal.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    restic_backup_test_env: /usr/local/sbin/restic-env
+    restic_backup_test_status: /var/lib/restic-backup/last-success
+    restic_backup_test_metric: /var/lib/prometheus/node-exporter/restic_backup.prom
+    restic_backup_test_metric_name: restic_backup_last_success_timestamp_seconds
+  tasks:
+    # Package and binary
+    - name: Read the installed restic package
+      ansible.builtin.command:
+        argv: [dpkg-query, --show, "--showformat=${db:Status-Status} ${Version}", restic]
+      register: restic_backup_test_package
+      changed_when: false
+
+    - name: Read the version of /usr/bin/restic and look for an upstream binary
+      ansible.builtin.command:
+        argv: [/usr/bin/restic, version]
+      register: restic_backup_test_version
+      changed_when: false
+
+    - name: Look for an upstream binary
+      ansible.builtin.stat:
+        path: /usr/local/bin/restic
+      register: restic_backup_test_upstream
+
+    - name: Check that the distribution's package runs (0.18 on Debian 13, 0.16 on Ubuntu 24.04)
+      vars:
+        package_version: "{{ restic_backup_test_package.stdout.split(' ')[1] | regex_replace('-[^-]*$', '') }}"
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_package.stdout.startswith('installed ')
+          - restic_backup_test_version.stdout.startswith('restic ' ~ package_version ~ ' ')
+          - package_version is match('^0\.18\.' if 'debian' in group_names else '^0\.16\.')
+          - not restic_backup_test_upstream.stat.exists
+
+    # Settings, scripts and units
+    - name: Read the owner and mode of the role's files and folders
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        get_checksum: false
+      register: restic_backup_test_files
+      loop:
+        - {path: /etc/restic, mode: "0700", dir: true}
+        - {path: /etc/restic/env, mode: "0600"}
+        - {path: /etc/restic/password, mode: "0600"}
+        - {path: /etc/restic/excludes, mode: "0600"}
+        - {path: /var/cache/restic-backup, mode: "0700", dir: true}
+        - {path: /var/lib/restic-backup, mode: "0755", dir: true}
+        - {path: /var/lib/prometheus/node-exporter, mode: "0755", dir: true}
+        - {path: "{{ restic_backup_test_env }}", mode: "0750"}
+        - {path: /usr/local/sbin/restic-backup, mode: "0750"}
+        - {path: /usr/local/sbin/restic-restore-test, mode: "0750"}
+        - {path: /etc/systemd/system/restic-backup.service, mode: "0644"}
+        - {path: /etc/systemd/system/restic-backup.timer, mode: "0644"}
+        - {path: /etc/systemd/system/restic-check.service, mode: "0644"}
+        - {path: /etc/systemd/system/restic-check.timer, mode: "0644"}
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Check that every file and folder belongs to root with its mode
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir == (item.item.dir | default(false))
+          - item.stat.mode == item.item.mode
+          - item.stat.pw_name == 'root'
+          - item.stat.gr_name == 'root'
+        quiet: true
+      loop: "{{ restic_backup_test_files.results }}"
+      loop_control:
+        label: "{{ item.item.path }}"
+
+    - name: Read the password file
+      ansible.builtin.slurp:
+        src: /etc/restic/password
+      register: restic_backup_test_password_file
+      no_log: true
+
+    # The wrapper reads the environment file with bash; the values must arrive unchanged.
+    - name: Read the settings as the wrapper sees them
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - >-
+            set -a; . /etc/restic/env;
+            printf '%s\n' "$RESTIC_REPOSITORY" "$RESTIC_PASSWORD_FILE" "$RESTIC_CACHE_DIR"
+            "$RESTIC_BACKUP_MOLECULE_VALUE"
+      register: restic_backup_test_settings
+      changed_when: false
+
+    - name: Read the exclude file
+      ansible.builtin.slurp:
+        src: /etc/restic/excludes
+      register: restic_backup_test_excludes
+
+    - name: Check the password, the settings and the exclude patterns
+      ansible.builtin.assert:
+        that:
+          - (restic_backup_test_password_file.content | b64decode) == restic_backup_password ~ '\n'
+          - >-
+            restic_backup_test_settings.stdout_lines == [restic_backup_repository, '/etc/restic/password',
+            '/var/cache/restic-backup', restic_backup_env.RESTIC_BACKUP_MOLECULE_VALUE]
+          - >-
+            (restic_backup_test_excludes.content | b64decode).splitlines() | reject('match', '^#') | list
+            == restic_backup_exclude
+
+    # The repository
+    - name: Read the configuration of the repository through the wrapper
+      ansible.builtin.command:
+        argv: ["{{ restic_backup_test_env }}", cat, config]
+      register: restic_backup_test_config
+      changed_when: false
+
+    - name: Check that the role initialised the local repository
+      ansible.builtin.assert:
+        that:
+          - (restic_backup_test_config.stdout | from_json).version == 2
+          - (restic_backup_test_config.stdout | from_json).id | length == 64
+
+    # Timers and services
+    - name: Read the timers
+      ansible.builtin.command:
+        argv: [systemctl, show, "--property=UnitFileState,ActiveState,Persistent,TimersCalendar", "{{ item }}"]
+      register: restic_backup_test_timers
+      changed_when: false
+      loop: [restic-backup.timer, restic-check.timer]
+
+    - name: Check that both timers are enabled, active and persistent, at 03:45 and on the first of each month
+      vars:
+        backup_timer: "{{ restic_backup_test_timers.results[0].stdout_lines }}"
+        check_timer: "{{ restic_backup_test_timers.results[1].stdout_lines }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            'UnitFileState=enabled' in backup_timer and 'ActiveState=active' in backup_timer
+            and 'Persistent=yes' in backup_timer
+          - >-
+            'UnitFileState=enabled' in check_timer and 'ActiveState=active' in check_timer
+            and 'Persistent=yes' in check_timer
+          - backup_timer | select('search', '^TimersCalendar=\{ OnCalendar=\*-\*-\* 03:45:00 ;') | list | length == 1
+          - check_timer | select('search', '^TimersCalendar=\{ OnCalendar=\*-\*-01 00:00:00 ;') | list | length == 1
+
+    - name: Read the sandbox and the commands of the services
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=ExecStart,ReadWritePaths,CapabilityBoundingSet,ProtectSystem,ProtectHome,PrivateTmp,After
+          - "{{ item }}"
+      register: restic_backup_test_units
+      changed_when: false
+      loop: [restic-backup.service, restic-check.service]
+
+    - name: Check the sandbox and the commands (the check reads 100 % of the data)
+      vars:
+        backup_unit: "{{ restic_backup_test_units.results[0].stdout_lines }}"
+        check_unit: "{{ restic_backup_test_units.results[1].stdout_lines }}"
+        check_command: /usr/local/sbin/restic-env --retry-lock 2h check --read-data-subset=100%
+        rw_paths: >-
+          ReadWritePaths=/var/cache/restic-backup /var/lib/restic-backup /srv/restic-repo
+          -/var/lib/prometheus/node-exporter
+      ansible.builtin.assert:
+        that:
+          - rw_paths in backup_unit and rw_paths in check_unit
+          - "'CapabilityBoundingSet=cap_dac_read_search' in backup_unit"
+          - >-
+            'ProtectSystem=strict' in backup_unit and 'ProtectHome=read-only' in backup_unit
+            and 'PrivateTmp=yes' in backup_unit
+          - backup_unit | select('search', '^ExecStart=\{ path=/usr/local/sbin/restic-backup ;') | list | length == 1
+          - backup_unit | select('search', '^After=(.* )?mariadb-dump\.service( |$)') | list | length == 1
+          - check_unit | select('search', 'argv\[\]=' ~ check_command ~ ' ;') | list | length == 1
+          - check_unit | select('search', '^After=(.* )?restic-backup\.service( |$)') | list | length == 1
+        fail_msg: "{{ restic_backup_test_units.results | map(attribute='stdout') | join('\n') }}"
+
+    # A run of the backup service
+    # A oneshot service: the start returns when the run has finished.
+    - name: Run the backup service
+      ansible.builtin.systemd_service:
+        name: restic-backup.service
+        state: started
+
+    - name: Read the result of the run, the host name and the time
+      ansible.builtin.command: "{{ item }}"
+      register: restic_backup_test_run
+      changed_when: false
+      loop:
+        - systemctl show --property=Result,ExecMainStatus restic-backup.service
+        - journalctl --unit restic-backup.service --output cat --no-pager
+        - uname -n
+        - date +%s
+
+    - name: Read the snapshots and the listing of the newest one
+      ansible.builtin.command:
+        argv: "{{ [restic_backup_test_env] + item }}"
+      register: restic_backup_test_snapshots
+      changed_when: false
+      loop:
+        - [snapshots, --json]
+        - [ls, --json, latest]
+
+    - name: Check the run and its snapshot (the test data without the excluded file and the cache folder)
+      vars:
+        snapshots: "{{ restic_backup_test_snapshots.results[0].stdout | from_json }}"
+        nodes: >-
+          {{ restic_backup_test_snapshots.results[1].stdout_lines | map('from_json')
+             | selectattr('struct_type', 'equalto', 'node') | list }}
+        data: "{{ nodes | selectattr('path', 'match', '^/srv/molecule-data/') | list }}"
+        data_paths: "{{ data | map(attribute='path') | list }}"
+        link_node: "{{ data | selectattr('path', 'equalto', '/srv/molecule-data/reports/latest.csv') | first }}"
+        private_node: "{{ data | selectattr('path', 'equalto', '/srv/molecule-data/private.txt') | first }}"
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_run.results[0].stdout_lines == ['Result=success', 'ExecMainStatus=0']
+          - restic_backup_test_run.results[1].stdout is search('snapshot [0-9a-f]{8} saved')
+          - >-
+            restic_backup_test_run.results[1].stdout
+            is search('restic-backup: backed up /etc /srv/molecule-data of host ')
+          - snapshots | length == 1
+          - snapshots[0].hostname == restic_backup_test_run.results[2].stdout
+          - snapshots[0].paths | sort == ['/etc', '/srv/molecule-data']
+          - "'/etc/restic/env' in nodes | map(attribute='path') | list"
+          - >-
+            ['/srv/molecule-data/notes.txt', '/srv/molecule-data/private.txt', '/srv/molecule-data/reports/summary.csv',
+            '/srv/molecule-data/reports/latest.csv'] | difference(data_paths) | length == 0
+          - "'/srv/molecule-data/scratch.tmp' not in data_paths"
+          - "'/srv/molecule-data/cache/blob.bin' not in data_paths"
+          - link_node.type == 'symlink'
+          - private_node.uid == 65534 and private_node.mode == 384
+        fail_msg: "{{ restic_backup_test_run.results[1].stdout_lines[-20:] | join('\n') }}"
+
+    - name: Read the status file and the metric
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: restic_backup_test_status_files
+      loop:
+        - "{{ restic_backup_test_status }}"
+        - "{{ restic_backup_test_metric }}"
+
+    - name: Read the modes of the status file and the metric, and look for temporary files
+      ansible.builtin.find:
+        paths: [/var/lib/restic-backup, /var/lib/prometheus/node-exporter]
+        hidden: true
+      register: restic_backup_test_state_files
+
+    - name: Check that the status file and the metric hold the time of the run
+      vars:
+        stamp: "{{ (restic_backup_test_status_files.results[0].content | b64decode) }}"
+        metric: "{{ (restic_backup_test_status_files.results[1].content | b64decode).splitlines() }}"
+        now_seconds: "{{ restic_backup_test_run.results[3].stdout | int }}"
+      ansible.builtin.assert:
+        that:
+          - stamp is match('^[0-9]{10}\n$')
+          - stamp | int <= now_seconds | int
+          - stamp | int > now_seconds | int - 600
+          - metric[0].startswith('# HELP ' ~ restic_backup_test_metric_name ~ ' ')
+          - metric[1] == '# TYPE ' ~ restic_backup_test_metric_name ~ ' gauge'
+          - metric[2] == restic_backup_test_metric_name ~ ' ' ~ (stamp | trim)
+          - metric | length == 3
+          - >-
+            restic_backup_test_state_files.files | map(attribute='path') | sort
+            == [restic_backup_test_status, restic_backup_test_metric] | sort
+          - restic_backup_test_state_files.files | map(attribute='mode') | unique | list == ['0644']
+
+    # Delete two files and a link and restore them from the snapshot
+    - name: Read the files before they are deleted
+      ansible.builtin.stat:
+        path: "/srv/molecule-data/{{ item }}"
+      register: restic_backup_test_before
+      loop: [notes.txt, private.txt, reports/latest.csv]
+
+    - name: Delete the files and the link
+      ansible.builtin.file:
+        path: "/srv/molecule-data/{{ item }}"
+        state: absent
+      loop: [notes.txt, private.txt, reports/latest.csv]
+
+    - name: Restore them in place from the newest snapshot
+      ansible.builtin.command:
+        argv:
+          - "{{ restic_backup_test_env }}"
+          - restore
+          - latest
+          - --target
+          - /
+          - --include
+          - /srv/molecule-data/notes.txt
+          - --include
+          - /srv/molecule-data/private.txt
+          - --include
+          - /srv/molecule-data/reports/latest.csv
+      changed_when: true
+
+    - name: Read the restored files and the link
+      ansible.builtin.stat:
+        path: "/srv/molecule-data/{{ item }}"
+      register: restic_backup_test_after
+      loop: [notes.txt, private.txt, reports/latest.csv]
+
+    - name: Check that the files and the link are back with their content, target, owner and mode
+      ansible.builtin.assert:
+        that:
+          - item.1.exists
+          - item.0.checksum | default('') == item.1.checksum | default('')
+          - item.0.lnk_target | default('') == item.1.lnk_target | default('')
+          - item.0.pw_name == item.1.pw_name
+          - item.0.mode == item.1.mode
+        quiet: true
+      loop: >-
+        {{ restic_backup_test_before.results | map(attribute='stat')
+           | zip(restic_backup_test_after.results | map(attribute='stat')) }}
+      loop_control:
+        label: "{{ item.0.path }}"
+
+    - name: Check the owner of the restored private file and the target of the restored link
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_after.results[1].stat.pw_name == 'nobody'
+          - restic_backup_test_after.results[1].stat.mode == '0600'
+          - restic_backup_test_after.results[2].stat.islnk
+          - restic_backup_test_after.results[2].stat.lnk_target == 'summary.csv'
+
+    # The restore test
+    - name: Run the restore test, and once more with an age limit of 0 hours
+      ansible.builtin.command:
+        argv: "{{ ['/usr/local/sbin/restic-restore-test'] + item }}"
+      register: restic_backup_test_restore
+      changed_when: false
+      failed_when: false
+      loop:
+        - []
+        - [--max-age-hours, "0"]
+
+    - name: Look for restored copies left in /var/tmp
+      ansible.builtin.find:
+        paths: /var/tmp
+        patterns: restic-restore-test-*
+        file_type: any
+      register: restic_backup_test_leftovers
+
+    - name: Check that the restore test passed, failed with the age limit and left nothing behind
+      vars:
+        restore_passed: "{{ restic_backup_test_restore.results[0] }}"
+        restore_too_old: "{{ restic_backup_test_restore.results[1] }}"
+      ansible.builtin.assert:
+        that:
+          - restore_passed.rc == 0
+          - >-
+            restore_passed.stdout
+            is search('restored [1-9][0-9]* files \([0-9]+ bytes\), [1-9][0-9]* folders, [1-9][0-9]* links')
+          - >-
+            restore_passed.stdout
+            is search('passed: every file, folder and link of the snapshot is in the restored copy')
+          - restore_too_old.rc == 1
+          - >-
+            restore_too_old.stderr is search('FAILED: the newest snapshot is [0-9.]+ hours old, more than 0')
+          - restic_backup_test_leftovers.files | length == 0
+        fail_msg: >-
+          {{ restic_backup_test_restore.results | map(attribute='stdout') | join('\n') }}
+          {{ restic_backup_test_restore.results | map(attribute='stderr') | join('\n') }}
+
+    # A second run without the large file: the retention (molecule.yml: the newest snapshot only)
+    # removes the first snapshot, and prune the data that only it held.
+    - name: Delete the large file
+      ansible.builtin.file:
+        path: /srv/molecule-data/bulk.bin
+        state: absent
+
+    - name: Measure the data of the repository before the second run
+      ansible.builtin.command: du --summarize --bytes /srv/restic-repo/data
+      register: restic_backup_test_size_before
+      changed_when: false
+
+    # A oneshot service: the start returns when the run has finished.
+    - name: Run the backup service again
+      ansible.builtin.systemd_service:
+        name: restic-backup.service
+        state: started
+
+    - name: Measure the data of the repository after the second run, and read the snapshots
+      ansible.builtin.command: "{{ item }}"
+      register: restic_backup_test_second
+      changed_when: false
+      loop:
+        - du --summarize --bytes /srv/restic-repo/data
+        - "{{ restic_backup_test_env }} snapshots --json"
+
+    - name: Check that forget removed the first snapshot and prune its data
+      vars:
+        first_snapshot: "{{ (restic_backup_test_snapshots.results[0].stdout | from_json)[0] }}"
+        snapshots: "{{ restic_backup_test_second.results[1].stdout | from_json }}"
+        before: "{{ restic_backup_test_size_before.stdout.split()[0] | int }}"
+        after: "{{ restic_backup_test_second.results[0].stdout.split()[0] | int }}"
+      ansible.builtin.assert:
+        that:
+          - snapshots | length == 1
+          - snapshots[0].id != first_snapshot.id
+          - after | int < before | int - 3 * 1024 * 1024
+        fail_msg: >-
+          {{ before }} bytes before, {{ after }} bytes after; snapshots
+          {{ snapshots | map(attribute='short_id') | join(' ') }}
+
+    # The monthly check, started by hand
+    # A oneshot service: the start returns when the run has finished.
+    - name: Run the check service
+      ansible.builtin.systemd_service:
+        name: restic-check.service
+        state: started
+
+    - name: Read the result and the journal of the check
+      ansible.builtin.command: "{{ item }}"
+      register: restic_backup_test_check
+      changed_when: false
+      loop:
+        - systemctl show --property=Result,ExecMainStatus restic-check.service
+        - journalctl --unit restic-check.service --output cat --no-pager
+
+    - name: Check that the check read all data and found no errors
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_check.results[0].stdout_lines == ['Result=success', 'ExecMainStatus=0']
+          - restic_backup_test_check.results[1].stdout is search('no errors were found')
+          - restic_backup_test_check.results[1].stdout is search('read all data|100(\.0+)?%')
+        fail_msg: "{{ restic_backup_test_check.results[1].stdout_lines[-15:] | join('\n') }}"
+
+    # The rating of the sandbox and the journal of the whole instance
+    - name: Rate the sandbox of the backup service
+      ansible.builtin.command: systemd-analyze security --no-pager restic-backup.service
+      register: restic_backup_test_security
+      changed_when: false
+
+    - name: Search the journal of the instance for the repository password
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail; journalctl --no-pager --output cat
+          | grep -c -F -- {{ restic_backup_password | quote }} || true
+        executable: /bin/bash
+      register: restic_backup_test_journal
+      changed_when: false
+      no_log: true
+
+    - name: Check the rating of the sandbox and that the password is in no log
+      vars:
+        exposure: >-
+          {{ restic_backup_test_security.stdout_lines[-1]
+             | regex_search('restic-backup\.service: ([0-9.]+)', '\1') | first }}
+      ansible.builtin.assert:
+        that:
+          - exposure | float <= 2.5
+          - restic_backup_test_journal.stdout | trim == '0'
+        fail_msg: "{{ restic_backup_test_security.stdout_lines[-1] }}"
