@@ -8,6 +8,13 @@ the Conventional Commit titles of the merged pull requests; do not edit entries 
 <!-- release-please inserts each new release above the first line that starts with "## ["
      (or "## " and a digit). Keep the "Origin" entry below as the last entry of this file. -->
 
+## [0.2.0](https://github.com/luminare-dev/ansible-collection-infra_edge/compare/v0.1.0...v0.2.0) (2026-10-22)
+
+
+### Added
+
+* **restic_backup:** add the restic backup role with a restore test ([#10](https://github.com/luminare-dev/ansible-collection-infra_edge/issues/10)) ([a4b5f23](https://github.com/luminare-dev/ansible-collection-infra_edge/commit/a4b5f2383cecbc6d91c9965b9e2f3ccc629b7a5e))
+
 ## 0.1.0 (2026-10-22)
 
 
