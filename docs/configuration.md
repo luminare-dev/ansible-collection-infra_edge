@@ -78,6 +78,35 @@ be set; by default it is read from the environment variable `TUNNEL_TOKEN` of th
 | `cloudflared_extra_args` | list of str | `[]` | Extra options of "cloudflared tunnel", placed before "run" (for example --protocol http2, --edge-ip-version 4 or --loglevel debug). Only letters, digits and . _ : / = @ , + - are allowed; --token and --metrics are refused (the role sets the token file and the metrics address). |
 <!-- argument-specs:cloudflared:end -->
 
+## nginx
+
+[`luminare.infra_edge.nginx`](../roles/nginx/README.md) runs nginx as the reverse proxy behind the
+tunnel: one site per application on a loopback listener, the client address from the connector's
+`CF-Connecting-IP` header (trusted only from `127.0.0.1`), a JSON access log, no version in the
+`Server` header, security headers, websockets and, optionally, TCP and UDP relays with the stream
+module. Each item of `nginx_sites` needs `name`, `server_name` and `upstream`; `listen` defaults to
+`127.0.0.1:8080` and must stay on a loopback address.
+
+<!-- argument-specs:nginx:begin -->
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `nginx_package` | str | `nginx` | Package that provides nginx (Debian 13 ships 1.26, Ubuntu 24.04 ships 1.24). |
+| `nginx_sites` | list of dict | `[]` | Reverse proxy sites, one per application. Keys: name (file name in /etc/nginx/sites-available, lower-case letters, digits, - and _), server_name (one name or several separated by spaces), listen (a loopback address with a port, default 127.0.0.1:8080; other addresses are refused), upstream (http:// URL of the application) and websocket (true passes Upgrade requests through, default false). A site that the role wrote earlier and that is no longer in the list is removed. |
+| `nginx_remove_default_site` | bool | `true` | Remove the package's default site (/etc/nginx/sites-enabled/default), which listens on port 80 of every address. |
+| `nginx_real_ip_from` | list of str | `["127.0.0.1"]` | Addresses or networks whose nginx_real_ip_header is trusted as the client address. Only the tunnel connector on the same host belongs here; a request from any other address keeps its own address, whatever the header says. The same list decides whose X-Forwarded-Proto is passed on. |
+| `nginx_real_ip_header` | str | `CF-Connecting-IP` | Request header that holds the client address (set by the tunnel connector). |
+| `nginx_server_tokens` | str: `off`, `on` | `off` | "off" sends "Server: nginx" without the version, also on error pages. Quote the value in YAML. |
+| `nginx_client_max_body_size` | str | `16m` | Largest request body nginx accepts (client_max_body_size, for example 16m or 1g). |
+| `nginx_gzip` | bool | `true` | Compress text, JSON, JavaScript, XML and SVG responses of at least 256 bytes, also proxied ones. |
+| `nginx_json_access_log` | bool | `true` | Write /var/log/nginx/access.log (and stream-access.log) as one JSON object per line. False uses nginx's combined format. The log holds client addresses; logrotate keeps 14 days. |
+| `nginx_websocket_read_timeout` | str | `1h` | How long a proxied websocket may stay idle on sites with websocket true (proxy_read_timeout); other sites keep nginx's 60 seconds. |
+| `nginx_security_headers` | dict | `{"X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Referrer-Policy": "strict-origin-when-cross-origin"}` | Response headers (name: value) added to every response that does not already carry the header from the application, error pages included. No Strict-Transport-Security: TLS ends at the tunnel's edge, which sets it. Values must not contain double quotes, backslashes or $. |
+| `nginx_stream_enabled` | bool | `false` | Install the stream module and relay the ports in nginx_stream_upstreams. False removes the relays from the configuration (the module package stays installed). |
+| `nginx_stream_upstreams` | list of dict | `[]` | TCP and UDP relays of the stream module, for example to a game server on another host. Keys: name (lower-case letters, digits and _), listen (a port, or address:port), upstream (host:port) and protocols (list of tcp and udp, default [tcp]). A relay listens on a public address, so the role opens its ports in the firewall drop-in. |
+| `nginx_firewall_manage` | bool | `false` | false writes /etc/nftables.d/20-nginx.nft only when /etc/nftables.d exists (the firewall of the base role); true also creates the directory (nftables and /etc/nftables.conf must exist). The file holds accept rules for the relay ports and is removed when there is no relay; a running nftables is restarted after a change. Sites listen on loopback addresses and need no rule. |
+| `nginx_firewall_sources` | list of str | `["0.0.0.0/0", "::/0"]` | Source networks that may reach the relay ports (IPv4 and IPv6 CIDRs). 0.0.0.0/0 and ::/0 together mean everyone. An empty list writes no accept rule. |
+<!-- argument-specs:nginx:end -->
+
 ## Secrets
 
 Secrets never go into this repository, an issue or a log. A role takes a secret only as a

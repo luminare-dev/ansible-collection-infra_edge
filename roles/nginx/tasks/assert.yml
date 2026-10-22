@@ -1,0 +1,119 @@
+# Checks that need more than the types in meta/argument_specs.yml. They run before any change.
+# Values from the inventory are written into nginx and nftables files, so every value must match
+# a strict pattern (vars/main.yml): a space, quote, semicolon or brace could add directives.
+
+- name: Gather the facts the role needs
+  ansible.builtin.setup:
+    gather_subset: [min]
+  when: ansible_facts['distribution'] is not defined
+
+- name: Check that the host runs a supported distribution
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in nginx_supported_platforms
+      - ansible_facts['distribution_major_version'] in nginx_supported_platforms[ansible_facts['distribution']]
+    fail_msg: >-
+      luminare.infra_edge.nginx supports Debian 13 and Ubuntu 24.04; this host runs
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Check the sites
+  vars:
+    nginx_check_names: "{{ nginx_sites | map(attribute='name') | list }}"
+    nginx_check_listen: "{{ nginx_sites | map(attribute='listen', default='127.0.0.1:8080') | map('string') | list }}"
+  ansible.builtin.assert:
+    that:
+      - nginx_check_names | reject('match', nginx_name_pattern) | list | length == 0
+      - nginx_check_names | unique | length == nginx_check_names | length
+      - "'default' not in nginx_check_names"
+      - nginx_sites | map(attribute='server_name') | reject('match', nginx_server_name_pattern) | list | length == 0
+      - nginx_check_listen | reject('match', nginx_loopback_listen_pattern) | list | length == 0
+      - nginx_check_listen | map('regex_replace', '^.*:', '') | map('int') | select('gt', 65535) | list | length == 0
+      - nginx_check_listen | map('regex_replace', '^.*:', '') | map('int') | select('lt', 1) | list | length == 0
+      - nginx_sites | map(attribute='upstream') | reject('match', nginx_upstream_url_pattern) | list | length == 0
+    fail_msg: >-
+      Every item of nginx_sites needs a unique name (lower-case letters, digits, - and _; not
+      "default"), a server_name (host names separated by spaces), a listen address on the loopback
+      interface (127.0.0.1:<port> or [::1]:<port>; the tunnel connector on the same host is the only
+      client) and an upstream http:// URL without spaces, quotes or semicolons. Sites: {{ nginx_check_names }}.
+    quiet: true
+
+- name: Check the client address, header and size settings
+  ansible.builtin.assert:
+    that:
+      - nginx_real_ip_from | length > 0
+      - nginx_real_ip_from | reject('match', nginx_cidr_pattern) | list | length == 0
+      - nginx_real_ip_header is match(nginx_header_name_pattern)
+      - nginx_client_max_body_size is match(nginx_size_pattern)
+      - nginx_websocket_read_timeout is match(nginx_time_pattern)
+      - nginx_security_headers.keys() | reject('match', nginx_header_name_pattern) | list | length == 0
+      - nginx_security_headers.keys() | map('lower') | unique | list | length == nginx_security_headers | length
+      - >-
+        nginx_security_headers.values() | map('string')
+        | reject('match', nginx_header_value_pattern) | list | length == 0
+    fail_msg: >-
+      nginx_real_ip_from must list at least one address or CIDR (127.0.0.1 by default),
+      nginx_real_ip_header must be a header name, nginx_client_max_body_size a size such as 16m,
+      nginx_websocket_read_timeout a time such as 1h, and nginx_security_headers must map header names
+      (each once, in any case) to values without double quotes, backslashes, $ or control characters.
+    quiet: true
+
+- name: Check the relays of the stream module
+  vars:
+    nginx_check_names: "{{ nginx_stream_upstreams | map(attribute='name') | list }}"
+    nginx_check_listen: "{{ nginx_stream_upstreams | map(attribute='listen') | map('string') | list }}"
+    nginx_check_ports: "{{ nginx_check_listen | map('regex_replace', '^.*:', '') | map('int') | list }}"
+  ansible.builtin.assert:
+    that:
+      - nginx_check_names | reject('match', '^[a-z0-9_]{1,64}$') | list | length == 0
+      - nginx_check_names | unique | length == nginx_check_names | length
+      - nginx_check_listen | reject('match', nginx_stream_listen_pattern) | list | length == 0
+      - nginx_check_listen | unique | length == nginx_check_listen | length
+      - nginx_check_ports | select('gt', 65535) | list | length == 0
+      - nginx_check_ports | select('lt', 1) | list | length == 0
+      - >-
+        nginx_stream_upstreams | map(attribute='upstream')
+        | reject('match', nginx_upstream_address_pattern) | list | length == 0
+      - nginx_stream_upstreams | map(attribute='protocols', default=['tcp']) | select('==', []) | list | length == 0
+      - nginx_firewall_sources | reject('match', nginx_cidr_pattern) | list | length == 0
+    fail_msg: >-
+      Every item of nginx_stream_upstreams needs a unique name (lower-case letters, digits and _), a
+      unique listen value (a port from 1 to 65535, or address:port), an upstream host:port and, if
+      given, a non-empty protocols list; nginx_firewall_sources must list IPv4 or IPv6 CIDRs.
+      Relays: {{ nginx_check_names }}.
+    quiet: true
+
+# The drop-in belongs to the firewall layout of the base role (docs/adr/0009): the role manages it
+# when /etc/nftables.d exists or nginx_firewall_manage is true, and checks a new file together
+# with /etc/nftables.conf by nft before it replaces the old one. Both are checked here, before
+# anything changes, instead of failing later with an unclear validate error.
+- name: Find the firewall layout of the base role
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ nginx_firewall_dropin_dir }}"
+    - "{{ nginx_firewall_ruleset }}"
+    - /usr/sbin/nft
+  register: nginx_firewall_stat
+
+- name: Decide whether the role manages the firewall drop-in and whether it has rules
+  ansible.builtin.set_fact:
+    nginx_firewall_write: "{{ nginx_firewall_manage or nginx_firewall_stat.results[0].stat.exists }}"
+    nginx_firewall_relays: "{{ nginx_stream_enabled and nginx_stream_upstreams | length > 0 }}"
+
+- name: Require /etc/nftables.conf and nft when the relay ports go into the drop-in
+  ansible.builtin.assert:
+    that:
+      - nginx_firewall_stat.results[1].stat.exists
+      - nginx_firewall_stat.results[2].stat.exists
+    fail_msg: >-
+      The role writes the relay ports into {{ nginx_firewall_dropin }}
+      ({{ 'nginx_firewall_manage is true' if nginx_firewall_manage else nginx_firewall_dropin_dir ~ ' exists' }})
+      and checks it together with {{ nginx_firewall_ruleset }} with "nft --check", but
+      {{ nginx_firewall_ruleset }} or /usr/sbin/nft is missing. Apply the base role first, or remove
+      an unused {{ nginx_firewall_dropin_dir }}. Nothing was changed.
+    quiet: true
+  when:
+    - nginx_firewall_write
+    - nginx_firewall_relays

@@ -1,0 +1,10 @@
+# nginx from the distribution: 1.26 on Debian 13, 1.24 on Ubuntu 24.04. The stream module is a
+# separate package that enables itself in /etc/nginx/modules-enabled.
+
+- name: Install the nginx package
+  ansible.builtin.apt:
+    name: >-
+      {{ [nginx_package] + ([nginx_stream_package] if nginx_stream_enabled else []) }}
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

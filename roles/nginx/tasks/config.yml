@@ -1,0 +1,80 @@
+# The role owns /etc/nginx/nginx.conf (docs/adr/0013): the package's file already sets gzip and a
+# combined access log at the http level, which a conf.d file cannot turn off or replace, and the
+# stream relays need the main context. The site files keep Debian's sites-available and
+# sites-enabled layout. No template is checked on its own (nginx -t needs the whole
+# configuration); service.yml checks everything before a reload.
+
+- name: Write the main configuration (hardening, client address, JSON log, stream relays)
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+# nginx creates a missing log file as root with mode 0644; the logs hold client addresses, so
+# they are created the way logrotate creates them (0640, www-data:adm) before nginx opens them.
+- name: Create the access logs, readable by root and the adm group only
+  ansible.builtin.file:
+    path: "{{ nginx_log_dir }}/{{ item }}"
+    state: touch
+    owner: www-data
+    group: adm
+    mode: "0640"
+    access_time: preserve
+    modification_time: preserve
+  loop: "{{ ['access.log'] + (['stream-access.log'] if nginx_stream_enabled else []) }}"
+
+- name: Write one file per site
+  ansible.builtin.template:
+    src: site.conf.j2
+    dest: "{{ nginx_sites_available_dir }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nginx_sites }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload nginx
+
+- name: Enable the sites
+  ansible.builtin.file:
+    src: "{{ nginx_sites_available_dir }}/{{ item.name }}"
+    dest: "{{ nginx_sites_enabled_dir }}/{{ item.name }}"
+    state: link
+    owner: root
+    group: root
+  loop: "{{ nginx_sites }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload nginx
+
+- name: Remove the default site of the package
+  ansible.builtin.file:
+    path: "{{ nginx_sites_enabled_dir }}/default"
+    state: absent
+  when: nginx_remove_default_site
+  notify: Reload nginx
+
+# Sites that this role wrote (first line = nginx_site_marker) but that are no longer listed.
+- name: Find the site files this role wrote
+  ansible.builtin.find:
+    paths: "{{ nginx_sites_available_dir }}"
+    file_type: file
+    contains: "^{{ nginx_site_marker | regex_escape }}$"
+    read_whole_file: false
+  register: nginx_written_sites
+
+- name: Remove the sites that are no longer in nginx_sites (symlink first, then the file)
+  vars:
+    nginx_stale_sites: >-
+      {{ nginx_written_sites.files | map(attribute='path') | map('basename')
+         | difference(nginx_sites | map(attribute='name') | list) }}
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ [nginx_sites_enabled_dir, nginx_sites_available_dir] | product(nginx_stale_sites)
+       | map('join', '/') | list }}
+  notify: Reload nginx

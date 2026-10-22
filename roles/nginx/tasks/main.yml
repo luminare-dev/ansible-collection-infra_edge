@@ -1,0 +1,23 @@
+# luminare.infra_edge.nginx: the order matters. The checks run before any change, every
+# configuration file is written before nginx -t checks the whole configuration, and only a
+# configuration that passed the check is reloaded (handlers run after the last task).
+
+- name: Check the inputs before changing anything
+  ansible.builtin.import_tasks: assert.yml
+  tags: [nginx, always]
+
+- name: Install nginx
+  ansible.builtin.import_tasks: install.yml
+  tags: [nginx, nginx_install]
+
+- name: Write the main configuration and the sites
+  ansible.builtin.import_tasks: config.yml
+  tags: [nginx, nginx_config]
+
+- name: Check the configuration and run nginx
+  ansible.builtin.import_tasks: service.yml
+  tags: [nginx, nginx_config, nginx_service]
+
+- name: Open the relay ports in the firewall drop-in
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [nginx, nginx_firewall]

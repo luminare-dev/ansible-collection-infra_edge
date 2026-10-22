@@ -1,0 +1,82 @@
+# Checks after side_effect.yml, which applied the role with only the "demo" site and without the
+# relay: the role removed the "api" site, the relay and its firewall rules, and the remaining site
+# still answers.
+- name: Verify the removal of a site and of the relay
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check the configuration with nginx -t
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Read the configuration as nginx loads it
+      ansible.builtin.command: nginx -T
+      register: nginx_test_dump
+      changed_when: false
+
+    - name: Read the site files and the firewall drop-in
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: nginx_test_files
+      loop:
+        - /etc/nginx/sites-enabled/api
+        - /etc/nginx/sites-available/api
+        - /etc/nginx/sites-enabled/demo
+        - /etc/nftables.d/20-nginx.nft
+
+    - name: Check that the api site, the stream block and the drop-in are gone and demo stays
+      vars:
+        stats: "{{ nginx_test_files.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - not stats[0].exists
+          - not stats[1].exists
+          - stats[2].islnk
+          - not stats[3].exists
+          - nginx_test_dump.stdout is not search('stream \{')
+          - nginx_test_dump.stdout is not search('api\.example\.com')
+
+    - name: Read the listening sockets
+      ansible.builtin.command: ss --listening --numeric --processes --no-header --tcp --udp
+      register: nginx_test_sockets
+      changed_when: false
+
+    - name: Check that nginx listens on 127.0.0.1:8080 only
+      vars:
+        nginx_lines: "{{ nginx_test_sockets.stdout_lines | select('search', '\"nginx\"') | map('split') | list }}"
+      ansible.builtin.assert:
+        that:
+          - nginx_lines | map(attribute=4) | unique | list == ['127.0.0.1:8080']
+          - nginx_lines | selectattr(0, 'equalto', 'udp') | list | length == 0
+
+    - name: Read the loaded input chain
+      ansible.builtin.command: nft list chain inet filter input
+      register: nginx_test_chain
+      changed_when: false
+
+    - name: Check that the relay rules left the loaded ruleset
+      ansible.builtin.assert:
+        that:
+          - nginx_test_chain.stdout is search('policy drop;')
+          - nginx_test_chain.stdout is not search('30120')
+
+    - name: Send a request to the remaining site
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /usr/local/bin/molecule-client
+          - http
+          - "8080"
+          - /molecule-after-removal
+          - "--header=Host: demo.example.com"
+          - "--header=CF-Connecting-IP: 203.0.113.8"
+      register: nginx_test_request
+      changed_when: false
+
+    - name: Check that the remaining site still passes the client address on
+      vars:
+        answer: "{{ nginx_test_request.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 200
+          - (answer.body | from_json).headers['x-real-ip'] == '203.0.113.8'

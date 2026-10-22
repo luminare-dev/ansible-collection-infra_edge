@@ -33,6 +33,16 @@ install on a host, and the failures of its CI and release automation.
 | **Mitigation** | If QUIC (UDP 7844) is blocked on the way, add the two items `--protocol` and `http2` to `cloudflared_extra_args` and run the play; for a rotated token, export the new `TUNNEL_TOKEN` and run the play. |
 | **Fix** | Correct the token, the outbound firewall or DNS, and run the playbook again; it rewrites the token file and restarts the connector. |
 
+## A site answers 502 or nginx does not run
+
+| | |
+|---|---|
+| **Meaning** | A public hostname of the tunnel that points to a site of `luminare.infra_edge.nginx` answers `502 Bad Gateway` (a page that says `nginx`), or `systemctl status nginx` shows `failed`. |
+| **Impact** | The application behind that site is unreachable for visitors; with nginx down, every site is. |
+| **Diagnosis** | `tail -n 20 /var/log/nginx/error.log` names the site and the upstream: `connect() failed (111: Connection refused)` means the application does not run or listens elsewhere, `upstream prematurely closed connection` that it failed during the request. `grep '"status":5' /var/log/nginx/access.log \| tail` lists the failed requests with `upstream_addr`. If nginx does not run, `nginx -t` names the file and line that it refuses (the unit runs the same check before it starts). |
+| **Mitigation** | Start or restart the application. If nginx refuses its configuration, move the file that `nginx -t` names out of `/etc/nginx/sites-enabled/` or `/etc/nginx/conf.d/`, then `systemctl start nginx`. |
+| **Fix** | Correct the `upstream` of the site or the application's listener, or the input that produced the broken file, and run the playbook again; it checks the whole configuration before it reloads nginx. |
+
 ## Security updates are not installed
 
 | | |

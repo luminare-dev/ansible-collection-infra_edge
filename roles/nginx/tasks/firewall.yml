@@ -1,0 +1,37 @@
+# Relay ports in the firewall layout of the base role (docs/adr/0009). Sites listen on loopback
+# addresses only, so without a relay no port needs to be opened and the drop-in is removed.
+# nginx_firewall_write (assert.yml): /etc/nftables.d exists or nginx_firewall_manage is true;
+# otherwise the role leaves the firewall alone (no base firewall on this host).
+
+- name: Create the firewall drop-in directory
+  ansible.builtin.file:
+    path: "{{ nginx_firewall_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nginx_firewall_manage
+
+- name: Write the relay ports into the firewall drop-in (20-nginx.nft)
+  ansible.builtin.template:
+    src: 20-nginx.nft.j2
+    dest: "{{ nginx_firewall_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # The candidate file is checked together with the whole ruleset before it replaces the old
+    # one, so a broken rule never reaches the drop-in directory.
+    validate: /bin/bash -c 'set -o pipefail; cat {{ nginx_firewall_ruleset }} %s | nft --check --file /dev/stdin'
+  when:
+    - nginx_firewall_write
+    - nginx_firewall_relays
+  notify: Reload the firewall for the nginx relays
+
+- name: Remove the firewall drop-in when no relay is configured
+  ansible.builtin.file:
+    path: "{{ nginx_firewall_dropin }}"
+    state: absent
+  when:
+    - nginx_firewall_write
+    - not nginx_firewall_relays
+  notify: Reload the firewall for the nginx relays

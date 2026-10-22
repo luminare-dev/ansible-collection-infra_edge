@@ -1,0 +1,153 @@
+# Input validation and documentation of luminare.infra_edge.nginx. Ansible checks these options
+# when the role starts (including the keys of every site and relay item). The variable tables in
+# roles/nginx/README.md and docs/configuration.md are generated from this file
+# (python3 tests/role_docs.py --write), and a unit test keeps them equal.
+argument_specs:
+  main:
+    short_description: Reverse proxy behind the tunnel, with loopback listeners and the real client address
+    description:
+      - Installs nginx from the distribution, writes its main configuration and one reverse proxy site
+        per application on a loopback listener for the tunnel connector, takes the client address from
+        the connector's CF-Connecting-IP header (only from 127.0.0.1), logs requests as JSON, hides the
+        version, adds security headers, proxies websockets and can relay TCP and UDP ports with the
+        stream module. It checks the configuration with nginx -t before every reload.
+    author:
+      - Luminare Development
+    options:
+      nginx_package:
+        type: str
+        default: nginx
+        description: Package that provides nginx (Debian 13 ships 1.26, Ubuntu 24.04 ships 1.24).
+      nginx_sites:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          Reverse proxy sites, one per application. Keys: name (file name in
+          /etc/nginx/sites-available, lower-case letters, digits, - and _), server_name (one name or
+          several separated by spaces), listen (a loopback address with a port, default 127.0.0.1:8080;
+          other addresses are refused), upstream (http:// URL of the application) and websocket (true
+          passes Upgrade requests through, default false). A site that the role wrote earlier and that
+          is no longer in the list is removed.
+        options:
+          name:
+            type: str
+            required: true
+            description: File name of the site in /etc/nginx/sites-available.
+          server_name:
+            type: str
+            required: true
+            description: Host name or names (separated by spaces) that the site answers.
+          listen:
+            type: str
+            description: Loopback address and port, for example 127.0.0.1:8080 (the default).
+          upstream:
+            type: str
+            required: true
+            description: URL of the application, for example http://127.0.0.1:3000.
+          websocket:
+            type: bool
+            description: Pass websocket Upgrade requests through and keep idle websockets open (default false).
+      nginx_remove_default_site:
+        type: bool
+        default: true
+        description: >-
+          Remove the package's default site (/etc/nginx/sites-enabled/default), which listens on port 80
+          of every address.
+      nginx_real_ip_from:
+        type: list
+        elements: str
+        default: ["127.0.0.1"]
+        description: >-
+          Addresses or networks whose nginx_real_ip_header is trusted as the client address. Only the
+          tunnel connector on the same host belongs here; a request from any other address keeps its own
+          address, whatever the header says. The same list decides whose X-Forwarded-Proto is passed on.
+      nginx_real_ip_header:
+        type: str
+        default: CF-Connecting-IP
+        description: Request header that holds the client address (set by the tunnel connector).
+      nginx_server_tokens:
+        type: str
+        default: "off"
+        choices: ["off", "on"]
+        description: >-
+          "off" sends "Server: nginx" without the version, also on error pages. Quote the value in YAML.
+      nginx_client_max_body_size:
+        type: str
+        default: 16m
+        description: Largest request body nginx accepts (client_max_body_size, for example 16m or 1g).
+      nginx_gzip:
+        type: bool
+        default: true
+        description: >-
+          Compress text, JSON, JavaScript, XML and SVG responses of at least 256 bytes, also proxied ones.
+      nginx_json_access_log:
+        type: bool
+        default: true
+        description: >-
+          Write /var/log/nginx/access.log (and stream-access.log) as one JSON object per line. False uses
+          nginx's combined format. The log holds client addresses; logrotate keeps 14 days.
+      nginx_websocket_read_timeout:
+        type: str
+        default: 1h
+        description: >-
+          How long a proxied websocket may stay idle on sites with websocket true (proxy_read_timeout);
+          other sites keep nginx's 60 seconds.
+      nginx_security_headers:
+        type: dict
+        default:
+          X-Content-Type-Options: nosniff
+          X-Frame-Options: SAMEORIGIN
+          Referrer-Policy: strict-origin-when-cross-origin
+        description: >-
+          Response headers (name: value) added to every response that does not already carry the header
+          from the application, error pages included. No Strict-Transport-Security: TLS ends at the
+          tunnel's edge, which sets it. Values must not contain double quotes, backslashes or $.
+      nginx_stream_enabled:
+        type: bool
+        default: false
+        description: >-
+          Install the stream module and relay the ports in nginx_stream_upstreams. False removes the
+          relays from the configuration (the module package stays installed).
+      nginx_stream_upstreams:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          TCP and UDP relays of the stream module, for example to a game server on another host. Keys:
+          name (lower-case letters, digits and _), listen (a port, or address:port), upstream (host:port)
+          and protocols (list of tcp and udp, default [tcp]). A relay listens on a public address, so the
+          role opens its ports in the firewall drop-in.
+        options:
+          name:
+            type: str
+            required: true
+            description: Name of the relay (nginx upstream name).
+          listen:
+            type: raw
+            required: true
+            description: Port, or address:port, that the relay listens on (for example 30120).
+          upstream:
+            type: str
+            required: true
+            description: Address and port of the target, for example 192.0.2.13:30120.
+          protocols:
+            type: list
+            elements: str
+            choices: [tcp, udp]
+            description: Protocols to relay (default [tcp]).
+      nginx_firewall_manage:
+        type: bool
+        default: false
+        description: >-
+          false writes /etc/nftables.d/20-nginx.nft only when /etc/nftables.d exists (the firewall of the
+          base role); true also creates the directory (nftables and /etc/nftables.conf must exist). The file
+          holds accept rules for the relay ports and is removed when there is no relay; a running nftables
+          is restarted after a change. Sites listen on loopback addresses and need no rule.
+      nginx_firewall_sources:
+        type: list
+        elements: str
+        default: ["0.0.0.0/0", "::/0"]
+        description: >-
+          Source networks that may reach the relay ports (IPv4 and IPv6 CIDRs). 0.0.0.0/0 and ::/0 together
+          mean everyone. An empty list writes no accept rule.

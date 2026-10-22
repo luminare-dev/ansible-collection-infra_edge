@@ -1,0 +1,24 @@
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Apply luminare.infra_edge.nginx
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.nginx
+      vars:
+        nginx_sites:
+          - "{{ nginx_test_demo_site }}"
+          # A second site without websockets, removed again by side_effect.yml.
+          - name: api
+            server_name: api.example.com
+            listen: 127.0.0.1:8081
+            upstream: http://127.0.0.1:9000
+        nginx_stream_enabled: true
+        # A TCP and UDP relay to the echo service of prepare.yml (in real use another host).
+        nginx_stream_upstreams:
+          - name: relay
+            listen: 30120
+            upstream: 127.0.0.1:9001
+            protocols: [tcp, udp]
+        # prepare.yml leaves /etc/nftables.d out, so the role creates it.
+        nginx_firewall_manage: true
