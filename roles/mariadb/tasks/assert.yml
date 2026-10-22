@@ -1,0 +1,150 @@
+# Checks that need more than the types in meta/argument_specs.yml. They run before any change.
+# Values from the inventory are written into the server configuration, a unit file, a shell
+# script and nftables files, so every value must match a strict pattern (vars/main.yml).
+# Messages name the databases and users they checked, never a password.
+
+- name: Gather the facts the role needs (distribution, memory, addresses)
+  ansible.builtin.setup:
+    gather_subset: [min, hardware, network]
+  when: >-
+    ansible_facts['distribution'] is not defined or ansible_facts['memtotal_mb'] is not defined
+    or ansible_facts['all_ipv4_addresses'] is not defined
+
+- name: Check that the host runs a supported distribution
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in mariadb_supported_platforms
+      - ansible_facts['distribution_major_version'] in mariadb_supported_platforms[ansible_facts['distribution']]
+    fail_msg: >-
+      luminare.infra_edge.mariadb supports Debian 13 and Ubuntu 24.04; this host runs
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Check the databases and users
+  vars:
+    mariadb_check_names: "{{ mariadb_databases | map(attribute='name') | map('string') | list }}"
+    mariadb_check_accounts: "{{ mariadb_databases | selectattr('user', 'defined') | selectattr('user') | list }}"
+    mariadb_check_users: "{{ mariadb_check_accounts | map(attribute='user') | map('string') | list }}"
+    mariadb_check_hosts: >-
+      {{ mariadb_check_accounts | map(attribute='host', default='localhost') | map('default', 'localhost', true)
+         | map('string') | list }}
+    mariadb_check_accounts_named: "{{ mariadb_check_users | zip(mariadb_check_hosts) | map('join', '@') | list }}"
+  ansible.builtin.assert:
+    that:
+      - mariadb_check_names | reject('match', mariadb_database_name_pattern) | list | length == 0
+      - mariadb_check_names | map('lower') | intersect(mariadb_reserved_databases) | length == 0
+      - mariadb_check_users | reject('match', mariadb_user_name_pattern) | list | length == 0
+      - mariadb_check_users | intersect(mariadb_reserved_users) | length == 0
+      - mariadb_check_hosts | reject('match', mariadb_user_host_pattern) | list | length == 0
+      - mariadb_check_accounts_named | unique | length == mariadb_check_accounts_named | length
+      - mariadb_check_accounts | map(attribute='password', default='') | reject | list | length == 0
+      - >-
+        mariadb_databases | selectattr('password', 'defined') | selectattr('password')
+        | map(attribute='user', default='') | reject | list | length == 0
+    fail_msg: >-
+      Every item of mariadb_databases needs a name (letters, digits and _, at most 64 characters;
+      not one of {{ mariadb_reserved_databases | join(', ') }}). User and password go together (both or
+      neither); the user name (letters, digits, ., - and _; not {{ mariadb_reserved_users | join(', ') }})
+      and its host (default localhost) may appear together only once.
+      Databases: {{ mariadb_check_names }}. Accounts: {{ mariadb_check_accounts_named }}.
+    quiet: true
+
+# The server does not start on an address that the host does not have, so the address is checked
+# against the host's addresses before the tuning file changes.
+- name: Check the address, the character set and the tuning values
+  vars:
+    mariadb_check_pool_size: "{{ mariadb_innodb_buffer_pool_size | string }}"
+    mariadb_check_addresses: >-
+      {{ ['127.0.0.1', '::1', '0.0.0.0', '::'] + ansible_facts['all_ipv4_addresses']
+         + ansible_facts['all_ipv6_addresses'] | default([]) }}
+  ansible.builtin.assert:
+    that:
+      - mariadb_bind_address is match(mariadb_address_pattern)
+      - mariadb_bind_address in mariadb_check_addresses
+      - mariadb_character_set_server is match(mariadb_charset_pattern)
+      - >-
+        (mariadb_collation_server | length == 0 and mariadb_character_set_server == 'utf8mb4')
+        or (mariadb_collation_server is match(mariadb_charset_pattern)
+            and mariadb_collation_server.startswith(mariadb_character_set_server ~ '_'))
+      - mariadb_innodb_buffer_pool_ratio | float > 0
+      - mariadb_innodb_buffer_pool_ratio | float <= 0.9
+      - mariadb_check_pool_size is match(mariadb_size_pattern)
+      - mariadb_innodb_log_file_size is match(mariadb_size_pattern)
+      - mariadb_max_connections | int >= 1
+      - mariadb_long_query_time | float >= 0
+    fail_msg: >-
+      mariadb_bind_address must be one IPv4 or IPv6 address of this host
+      ({{ mariadb_check_addresses | join(', ') }}), mariadb_character_set_server a
+      character set name, and mariadb_collation_server empty (only with utf8mb4) or a collation of
+      that character set (the packages set a utf8mb4 collation, so another character set needs its
+      own). mariadb_innodb_buffer_pool_ratio must be above 0 and at most 0.9, the sizes a number
+      with K, M or G (buffer pool: {{ mariadb_check_pool_size }}), mariadb_max_connections at least 1
+      and mariadb_long_query_time 0 or more.
+    quiet: true
+
+- name: Check the dump settings
+  ansible.builtin.assert:
+    that:
+      - mariadb_dump_dir is match(mariadb_path_pattern)
+      - mariadb_dump_dir.split('/') | length > 2
+      - mariadb_dump_dir is not match(mariadb_dump_dir_forbidden_pattern)
+      - mariadb_dump_retention_days | int >= 1
+      - mariadb_dump_oncalendar is match(mariadb_oncalendar_pattern)
+    fail_msg: >-
+      mariadb_dump_dir must be an absolute path below a top-level folder (letters, digits, ., - and _;
+      default /var/backups/mariadb) outside the system folders and the server's data folder
+      /var/lib/mysql (the role makes it root's, mode 0700), mariadb_dump_retention_days at least 1
+      and mariadb_dump_oncalendar a systemd calendar expression such as "*-*-* 03:15:00".
+    quiet: true
+
+# systemd parses the expression itself, so a typo fails here instead of in the timer unit.
+- name: Check the calendar expression of the dump timer with systemd
+  ansible.builtin.command:
+    argv: [systemd-analyze, calendar, "{{ mariadb_dump_oncalendar }}"]
+  changed_when: false
+  check_mode: false
+
+- name: Check the application hosts for the firewall drop-in
+  ansible.builtin.assert:
+    that:
+      - mariadb_allowed_app_hosts | reject('match', mariadb_cidr_pattern) | list | length == 0
+      - mariadb_allowed_app_hosts | select('search', '/0$') | list | length == 0
+    fail_msg: >-
+      mariadb_allowed_app_hosts must list IPv4 or IPv6 addresses or CIDRs of the application hosts;
+      the database port is never opened to everyone (no /0).
+    quiet: true
+
+# The drop-in belongs to the firewall layout of the base role (docs/adr/0009): the role manages it
+# when /etc/nftables.d exists or mariadb_firewall_manage is true, and checks a new file together
+# with /etc/nftables.conf by nft before it replaces the old one. Both are checked here, before
+# anything changes, instead of failing later with an unclear validate error.
+- name: Find the firewall layout of the base role
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ mariadb_firewall_dropin_dir }}"
+    - "{{ mariadb_firewall_ruleset }}"
+    - /usr/sbin/nft
+  register: mariadb_firewall_stat
+
+- name: Decide whether the role manages the firewall drop-in
+  ansible.builtin.set_fact:
+    mariadb_firewall_write: "{{ mariadb_firewall_manage or mariadb_firewall_stat.results[0].stat.exists }}"
+
+- name: Require /etc/nftables.conf and nft when the application hosts go into the drop-in
+  ansible.builtin.assert:
+    that:
+      - mariadb_firewall_stat.results[1].stat.exists
+      - mariadb_firewall_stat.results[2].stat.exists
+    fail_msg: >-
+      The role writes port {{ mariadb_port }} for mariadb_allowed_app_hosts into
+      {{ mariadb_firewall_dropin }}
+      ({{ 'mariadb_firewall_manage is true' if mariadb_firewall_manage else mariadb_firewall_dropin_dir ~ ' exists' }})
+      and checks it together with {{ mariadb_firewall_ruleset }} with "nft --check", but
+      {{ mariadb_firewall_ruleset }} or /usr/sbin/nft is missing. Apply the base role first, or remove
+      an unused {{ mariadb_firewall_dropin_dir }}. Nothing was changed.
+    quiet: true
+  when:
+    - mariadb_firewall_write
+    - mariadb_allowed_app_hosts | length > 0

@@ -1,0 +1,11 @@
+# MariaDB from the distribution: 11.8 on Debian 13, 10.11 on Ubuntu 24.04. The packages create
+# root@localhost with unix_socket authentication (no password) and start the server on hosts
+# where services may start; the role starts it in service.yml anyway.
+
+- name: Install the MariaDB server, the Python driver and zstd
+  ansible.builtin.apt:
+    name: "{{ mariadb_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: mariadb_install_result

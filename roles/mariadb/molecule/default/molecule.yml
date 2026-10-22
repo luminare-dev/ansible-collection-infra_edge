@@ -1,0 +1,44 @@
+# Molecule scenario of luminare.infra_edge.mariadb. The driver and both platforms (Debian 13 and
+# Ubuntu 24.04) come from .config/molecule/config.yml; run it with
+#   cd roles/mariadb && export MOLECULE_ROLE=mariadb && molecule test
+# ansible.mariadb comes with the "ansible" package of requirements-test.txt, so nothing is
+# downloaded from Galaxy. prepare.yml loads a firewall in the layout of the base role (without
+# /etc/nftables.d). converge.yml applies the role with the defaults on 127.0.0.1 and two
+# databases; verify.yml checks the server, the accounts, the slow query log and a dump with a
+# restore. side_effect.yml then plants what mysql_secure_installation removes (anonymous accounts,
+# a test database with open privileges, root accounts with a password for other hosts) and applies
+# the role for application hosts on the instance's own address, with the firewall drop-in and
+# without the dump timer; verify_app_hosts.yml checks the result. Synthetic passwords only.
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # The database of the plan's example plus one without an account.
+        mariadb_test_databases:
+          - name: molecule
+            user: molecule
+            host: localhost
+            priv: "molecule.*:ALL"
+            password: molecule-only
+          - name: molecule_archive
+        # A small buffer pool from the default formula: 2 % of the memory that the container sees.
+        mariadb_innodb_buffer_pool_ratio: 0.02
+        # side_effect.yml: the account with read access from the instance's address, and the
+        # password of the root accounts it plants (which the role must remove).
+        mariadb_test_app_password: molecule-app-only
+        mariadb_test_root_password: molecule-root-only
+scenario:
+  name: default
+  # The shared sequence (.config/molecule/config.yml) plus the application host check after verify.
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - side_effect
+    - verify verify_app_hosts.yml
+    - destroy

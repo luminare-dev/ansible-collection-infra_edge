@@ -1,0 +1,37 @@
+# Defaults of luminare.infra_edge.mariadb. Every variable is described, with its type, in
+# meta/argument_specs.yml; the tables in README.md and docs/configuration.md are generated from it.
+
+# Packages: the distribution's server (MariaDB 11.8 on Debian 13, 10.11 on Ubuntu 24.04), the
+# Python driver that the ansible.mariadb modules need on the host, and zstd for the dumps
+mariadb_packages:
+  - mariadb-server
+  - python3-pymysql
+  - zstd
+
+# Network: the server listens on this address only
+mariadb_bind_address: 127.0.0.1
+
+# Databases and their users. Items: name, user, password, host, priv. Passwords come from an
+# encrypted source (Ansible Vault, SOPS), never from a plain-text inventory.
+mariadb_databases: []
+
+# Tuning drop-in (/etc/mysql/mariadb.conf.d/60-tuning.cnf)
+mariadb_innodb_buffer_pool_ratio: 0.25
+mariadb_innodb_buffer_pool_size: "{{ (ansible_facts['memtotal_mb'] * mariadb_innodb_buffer_pool_ratio) | int }}M"
+mariadb_innodb_log_file_size: 256M
+mariadb_max_connections: 100
+mariadb_character_set_server: utf8mb4
+mariadb_collation_server: ""
+mariadb_slow_query_log: true
+mariadb_long_query_time: 1
+
+# Nightly dumps: one zstd file per database plus one with the users and grants
+mariadb_dump_enabled: true
+mariadb_dump_dir: /var/backups/mariadb
+mariadb_dump_oncalendar: "*-*-* 03:15:00"
+mariadb_dump_retention_days: 2
+
+# Firewall drop-in for port 3306: written when /etc/nftables.d of the base role exists, or when
+# mariadb_firewall_manage is true (the role then creates the directory)
+mariadb_allowed_app_hosts: []
+mariadb_firewall_manage: false

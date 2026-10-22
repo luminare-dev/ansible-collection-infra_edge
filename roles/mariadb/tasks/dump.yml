@@ -1,0 +1,51 @@
+# Nightly logical dumps on the host (docs/adr/0016): a script, a sandboxed oneshot service that
+# runs it as root (unix_socket login, no password file) and a timer. The files are always
+# written, so the service can also be started by hand; mariadb_dump_enabled switches the timer.
+
+- name: Create the dump folder, readable by root only
+  ansible.builtin.file:
+    path: "{{ mariadb_dump_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write the dump script
+  ansible.builtin.template:
+    src: mariadb-dump-all.sh.j2
+    dest: "{{ mariadb_dump_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Write the dump service and timer
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - src: mariadb-dump.service.j2
+      dest: "{{ mariadb_dump_service_file }}"
+    - src: mariadb-dump.timer.j2
+      dest: "{{ mariadb_dump_timer_file }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart the mariadb dump timer
+
+# Check mode writes nothing, so a timer unit that does not exist yet can neither be enabled nor
+# restarted (the handler has the same condition); such a run only reports the files.
+- name: Find the dump timer unit
+  ansible.builtin.stat:
+    path: "{{ mariadb_dump_timer_file }}"
+    get_checksum: false
+  register: mariadb_dump_timer_stat
+
+- name: Enable and start the dump timer, or stop and disable it
+  ansible.builtin.systemd_service:
+    name: mariadb-dump.timer
+    enabled: "{{ mariadb_dump_enabled }}"
+    state: "{{ mariadb_dump_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true
+  when: mariadb_dump_timer_stat.stat.exists or not ansible_check_mode

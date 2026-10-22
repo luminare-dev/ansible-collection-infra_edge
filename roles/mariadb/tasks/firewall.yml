@@ -1,0 +1,37 @@
+# Port 3306 for the application hosts in the firewall layout of the base role (docs/adr/0009).
+# Without application hosts no port needs to be opened and the drop-in is removed.
+# mariadb_firewall_write (assert.yml): /etc/nftables.d exists or mariadb_firewall_manage is true;
+# otherwise the role leaves the firewall alone (no base firewall on this host).
+
+- name: Create the firewall drop-in directory
+  ansible.builtin.file:
+    path: "{{ mariadb_firewall_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: mariadb_firewall_manage
+
+- name: Write the application hosts into the firewall drop-in (30-mariadb.nft)
+  ansible.builtin.template:
+    src: 30-mariadb.nft.j2
+    dest: "{{ mariadb_firewall_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # The candidate file is checked together with the whole ruleset before it replaces the old
+    # one, so a broken rule never reaches the drop-in directory.
+    validate: /bin/bash -c 'set -o pipefail; cat {{ mariadb_firewall_ruleset }} %s | nft --check --file /dev/stdin'
+  when:
+    - mariadb_firewall_write
+    - mariadb_allowed_app_hosts | length > 0
+  notify: Reload the firewall for the mariadb app hosts
+
+- name: Remove the firewall drop-in when no application host is configured
+  ansible.builtin.file:
+    path: "{{ mariadb_firewall_dropin }}"
+    state: absent
+  when:
+    - mariadb_firewall_write
+    - mariadb_allowed_app_hosts | length == 0
+  notify: Reload the firewall for the mariadb app hosts

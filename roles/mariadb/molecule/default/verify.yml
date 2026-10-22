@@ -1,0 +1,418 @@
+# Checks of the converged instance: the server and its settings, the accounts and databases, the
+# listener, the slow query log, a real dump run with its retention, restores of a database and of
+# the accounts from the dumps, and the firewall left alone. Root queries go over the socket
+# (unix_socket login, no password). The checks add a table with one row to the "molecule"
+# database and slow queries to the log.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    mariadb_test_root_sql: [mariadb, --batch, --skip-column-names, --execute]
+    mariadb_test_dump_dir: /var/backups/mariadb
+    mariadb_test_stamp: '[0-9]{8}T[0-9]{6}Z'
+  tasks:
+    - name: Gather the memory size for the buffer pool check
+      ansible.builtin.setup:
+        gather_subset: [min, hardware]
+
+    # Server and settings
+    - name: Read the state of mariadb
+      ansible.builtin.systemd_service:
+        name: mariadb.service
+      register: mariadb_test_service
+
+    - name: Check that mariadb is enabled and running
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_service.status.UnitFileState == 'enabled'
+          - mariadb_test_service.status.ActiveState == 'active'
+          - mariadb_test_service.status.SubState == 'running'
+
+    - name: Read the settings as root over the socket
+      ansible.builtin.command:
+        argv: >-
+          {{ mariadb_test_root_sql + ['SELECT @@bind_address, @@character_set_server, @@max_connections,
+          @@innodb_log_file_size, @@innodb_buffer_pool_size, @@slow_query_log, @@slow_query_log_file,
+          @@long_query_time'] }}
+      register: mariadb_test_settings
+      changed_when: false
+
+    - name: Read the tuning file
+      ansible.builtin.slurp:
+        src: /etc/mysql/mariadb.conf.d/60-tuning.cnf
+      register: mariadb_test_tuning
+
+    - name: Read the owner and mode of the tuning file
+      ansible.builtin.stat:
+        path: /etc/mysql/mariadb.conf.d/60-tuning.cnf
+      register: mariadb_test_tuning_stat
+
+    # The default size is memtotal_mb x ratio; MariaDB may round it up to its allocation unit.
+    - name: Check the settings the server runs with
+      vars:
+        values: "{{ mariadb_test_settings.stdout.split('\t') }}"
+        pool_mb: "{{ (ansible_facts['memtotal_mb'] * mariadb_innodb_buffer_pool_ratio) | int }}"
+      ansible.builtin.assert:
+        that:
+          - values[0] == '127.0.0.1'
+          - values[1] == 'utf8mb4'
+          - values[2] == '100'
+          - values[3] | int == 256 * 1024 * 1024
+          - values[4] | int >= pool_mb | int * 1024 * 1024
+          - values[4] | int < (pool_mb | int + 128) * 1024 * 1024
+          - values[5] == '1'
+          - values[6] == '/var/log/mysql/mariadb-slow.log'
+          - values[7] | float == 1.0
+          - ('innodb_buffer_pool_size = ' ~ pool_mb ~ 'M') in (mariadb_test_tuning.content | b64decode).splitlines()
+          - mariadb_test_tuning_stat.stat.mode == '0644'
+          - mariadb_test_tuning_stat.stat.pw_name == 'root'
+
+    # Accounts and databases (what mysql_secure_installation leaves, plus the role's own)
+    - name: Read the accounts, the root grants and the databases
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + [item] }}"
+      register: mariadb_test_accounts
+      changed_when: false
+      loop:
+        - SELECT CONCAT(User, '@', Host) FROM mysql.user ORDER BY 1
+        - SHOW GRANTS FOR root@localhost
+        - SHOW DATABASES
+        - SELECT COUNT(*) FROM mysql.db WHERE Db IN ('test', 'test\\_%')
+
+    - name: Check the accounts (no anonymous account, root on localhost only) and the databases
+      vars:
+        results: "{{ mariadb_test_accounts.results | map(attribute='stdout_lines') | list }}"
+      ansible.builtin.assert:
+        that:
+          - results[0] == ['mariadb.sys@localhost', 'molecule@localhost', 'mysql@localhost', 'root@localhost']
+          - results[1][0] is search('IDENTIFIED VIA .*unix_socket')
+          - >-
+            results[2] | sort == ['information_schema', 'molecule', 'molecule_archive', 'mysql',
+            'performance_schema', 'sys']
+          - results[3] == ['0']
+
+    - name: Try root over TCP without a password
+      ansible.builtin.command:
+        argv: [mariadb, --protocol=TCP, --host=127.0.0.1, --user=root, --execute, SELECT 1]
+      register: mariadb_test_root_tcp
+      changed_when: false
+      failed_when: false
+
+    - name: Check that root over TCP is refused
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_root_tcp.rc != 0
+          - mariadb_test_root_tcp.stderr is search('Access denied')
+
+    - name: Read the listening sockets
+      ansible.builtin.command: ss --listening --numeric --processes --no-header --tcp --udp
+      register: mariadb_test_sockets
+      changed_when: false
+
+    - name: Check that the server listens on 127.0.0.1:3306 only
+      vars:
+        server_lines: "{{ mariadb_test_sockets.stdout_lines | select('search', '\"mariadbd\"') | map('split') | list }}"
+      ansible.builtin.assert:
+        that:
+          - server_lines | map(attribute=4) | unique | list == ['127.0.0.1:3306']
+          - server_lines | map(attribute=0) | unique | list == ['tcp']
+
+    # The account of the "molecule" database
+    - name: Use the molecule account with its password (a table with one row for the dump check)
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - --batch
+          - --skip-column-names
+          - --user=molecule
+          - --database=molecule
+          - --execute
+          - >-
+            CREATE TABLE IF NOT EXISTS dump_check (id INT PRIMARY KEY, note VARCHAR(64));
+            REPLACE INTO dump_check VALUES (1, 'molecule-dump-row');
+            SELECT note FROM dump_check WHERE id = 1
+      environment:
+        MYSQL_PWD: "{{ mariadb_test_databases[0].password }}"
+      register: mariadb_test_app
+      changed_when: true
+
+    - name: Try the molecule account on the other database and with a wrong password
+      ansible.builtin.command:
+        argv: "{{ ['mariadb', '--user=molecule'] + item.args + ['--execute', 'SELECT 1'] }}"
+      environment:
+        MYSQL_PWD: "{{ item.password }}"
+      register: mariadb_test_denied
+      changed_when: false
+      failed_when: false
+      loop:
+        - args: [--database=molecule_archive]
+          password: "{{ mariadb_test_databases[0].password }}"
+        - args: []
+          password: wrong-password
+      loop_control:
+        label: "{{ item.args }}"
+
+    - name: Check the account's access
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_app.stdout_lines == ['molecule-dump-row']
+          - mariadb_test_denied.results | map(attribute='rc') | select('==', 0) | list | length == 0
+          - >-
+            mariadb_test_denied.results[0].stderr
+            is search('Access denied for user .molecule.@.localhost. to database .molecule_archive.')
+          - >-
+            mariadb_test_denied.results[1].stderr
+            is search('Access denied for user .molecule.@.localhost. \(using password. YES\)')
+
+    # Slow query log
+    - name: Run a slow statement
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + ['SELECT SLEEP(1.2) AS molecule_slow'] }}"
+      changed_when: false
+
+    - name: Read the slow query log
+      ansible.builtin.slurp:
+        src: /var/log/mysql/mariadb-slow.log
+      register: mariadb_test_slow_log
+
+    - name: Read the log folder
+      ansible.builtin.stat:
+        path: /var/log/mysql
+      register: mariadb_test_log_dir
+
+    - name: Check that the slow statement was logged
+      ansible.builtin.assert:
+        that:
+          - (mariadb_test_slow_log.content | b64decode) is search('SELECT SLEEP\(1\.2\) AS molecule_slow')
+          - mariadb_test_log_dir.stat.mode == '2750'
+          - mariadb_test_log_dir.stat.pw_name == 'mysql'
+          - mariadb_test_log_dir.stat.gr_name == 'adm'
+
+    # Dumps: files, units and timer
+    - name: Read the dump folder, the script and the units
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: mariadb_test_dump_files
+      loop:
+        - "{{ mariadb_test_dump_dir }}"
+        - /usr/local/sbin/mariadb-dump-all
+        - /etc/systemd/system/mariadb-dump.service
+        - /etc/systemd/system/mariadb-dump.timer
+
+    - name: Check owner and mode (dump folder readable by root only)
+      vars:
+        stats: "{{ mariadb_test_dump_files.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - stats[0].isdir and stats[0].mode == '0700' and stats[0].pw_name == 'root' and stats[0].gr_name == 'root'
+          - stats[1].isreg and stats[1].mode == '0750' and stats[1].pw_name == 'root'
+          - stats[2].isreg and stats[2].mode == '0644' and stats[2].pw_name == 'root'
+          - stats[3].isreg and stats[3].mode == '0644' and stats[3].pw_name == 'root'
+
+    - name: Check the units with systemd-analyze verify
+      ansible.builtin.command:
+        argv:
+          - systemd-analyze
+          - verify
+          - /etc/systemd/system/mariadb-dump.service
+          - /etc/systemd/system/mariadb-dump.timer
+      changed_when: false
+
+    # systemd-analyze security rates a unit file that is not loaded only from a file name it does
+    # not know yet, so the check reads a copy under a different name.
+    - name: Rate the sandbox of the dump service (exposure 1.5 or lower)
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          trap 'rm -rf "$dir"' EXIT
+          cp /etc/systemd/system/mariadb-dump.service "$dir/mariadb-dump-sandbox-check.service"
+          systemd-analyze security --offline=true --threshold=15 --no-pager "$dir/mariadb-dump-sandbox-check.service"
+        executable: /bin/bash
+      register: mariadb_test_exposure
+      changed_when: false
+
+    - name: Show the rating
+      ansible.builtin.debug:
+        msg: "{{ mariadb_test_exposure.stdout_lines | select('search', 'Overall exposure level') | list }}"
+
+    - name: Read the timer
+      ansible.builtin.systemd_service:
+        name: mariadb-dump.timer
+      register: mariadb_test_timer
+
+    - name: Check that the timer is enabled, active, persistent and set to 03:15
+      vars:
+        props: "{{ mariadb_test_timer.status }}"
+      ansible.builtin.assert:
+        that:
+          - props['UnitFileState'] == 'enabled'
+          - props['ActiveState'] == 'active'
+          - props['Persistent'] == 'yes'
+          - props['TimersCalendar'] is search('OnCalendar=\*-\*-\* 03:15:00')
+
+    # Retention: a dump from three days ago must go, one from yesterday and an unknown file stay.
+    - name: Plant an old dump, an old unfinished dump, a recent dump and an unrelated file
+      ansible.builtin.command:
+        argv: [touch, --date, "{{ item.age }}", "{{ mariadb_test_dump_dir }}/{{ item.name }}"]
+      changed_when: true
+      loop:
+        - name: molecule-20000101T000000Z.sql.zst
+          age: 3 days ago
+        - name: molecule-20000101T000001Z.sql.zst.partial
+          age: 3 days ago
+        - name: molecule-20000102T000000Z.sql.zst
+          age: 1 day ago
+        - name: notes.txt
+          age: 3 days ago
+
+    # A oneshot service: the start returns when the script has finished.
+    - name: Run the dump service
+      ansible.builtin.systemd_service:
+        name: mariadb-dump.service
+        state: started
+
+    - name: Read the result of the run
+      ansible.builtin.systemd_service:
+        name: mariadb-dump.service
+      register: mariadb_test_run
+
+    - name: Read the log of the run
+      ansible.builtin.command: journalctl --unit=mariadb-dump.service --output=cat --no-pager
+      register: mariadb_test_run_log
+      changed_when: false
+
+    - name: Check that the run succeeded in its sandbox
+      vars:
+        props: "{{ mariadb_test_run.status }}"
+      ansible.builtin.assert:
+        that:
+          - props['Result'] == 'success'
+          - props['ExecMainStatus'] == '0'
+          - props['PrivateNetwork'] == 'yes'
+          - props['ProtectSystem'] == 'strict'
+          - >-
+            mariadb_test_run_log.stdout
+            is search('Dumped 2 database\(s\) and the accounts to /var/backups/mariadb')
+
+    - name: List the dump folder
+      ansible.builtin.find:
+        paths: "{{ mariadb_test_dump_dir }}"
+        patterns: ["*"]
+        hidden: true
+      register: mariadb_test_dumps
+
+    - name: Check the dump files and the retention
+      vars:
+        names: "{{ mariadb_test_dumps.files | map(attribute='path') | map('basename') | sort }}"
+        new_files: >-
+          {{ mariadb_test_dumps.files | selectattr('path', 'search', '-(?!2000)' ~ mariadb_test_stamp) | list }}
+        new_names: >-
+          {{ new_files | map(attribute='path') | map('basename')
+             | map('regex_replace', '-' ~ mariadb_test_stamp, '-STAMP') | sort }}
+      ansible.builtin.assert:
+        that:
+          - new_names == ['molecule-STAMP.sql.zst', 'molecule_archive-STAMP.sql.zst', 'system-users-STAMP.sql.zst']
+          - new_files | map(attribute='size') | min > 0
+          - new_files | map(attribute='mode') | unique | list == ['0600']
+          - new_files | map(attribute='pw_name') | unique | list == ['root']
+          - "'molecule-20000101T000000Z.sql.zst' not in names"
+          - "'molecule-20000101T000001Z.sql.zst.partial' not in names"
+          - "'molecule-20000102T000000Z.sql.zst' in names"
+          - "'notes.txt' in names"
+          - names | length == 5
+        fail_msg: "Files in the dump folder: {{ names }}"
+
+    - name: Test every new dump with zstd and read the two that are checked by content
+      ansible.builtin.command:
+        argv: [zstd, --decompress, --stdout, "{{ item }}"]
+      register: mariadb_test_dump_content
+      changed_when: false
+      loop: >-
+        {{ mariadb_test_dumps.files | selectattr('path', 'search', '-(?!2000)' ~ mariadb_test_stamp)
+           | map(attribute='path') | sort }}
+
+    - name: Check the database dump and the accounts dump
+      vars:
+        by_name: >-
+          {{ dict(mariadb_test_dump_content.results | map(attribute='item') | map('basename')
+                  | map('regex_replace', '-' ~ mariadb_test_stamp ~ '.*$', '')
+                  | zip(mariadb_test_dump_content.results | map(attribute='stdout'))) }}
+      ansible.builtin.assert:
+        that:
+          - by_name['molecule'] is search('CREATE DATABASE .*`molecule`')
+          - by_name['molecule'] is search('CREATE TABLE `dump_check`')
+          - by_name['molecule'] is search('molecule-dump-row')
+          - by_name['molecule'] is search('-- Dump completed')
+          - by_name['molecule_archive'] is search('CREATE DATABASE .*`molecule_archive`')
+          - by_name['system-users'] is search('CREATE USER IF NOT EXISTS `molecule`@`localhost`')
+          - by_name['system-users'] is search('GRANT ALL PRIVILEGES ON `molecule`.\* TO `molecule`@`localhost`')
+          - by_name['molecule'] is not search('CREATE DATABASE .*`mysql`')
+
+    # Restore of a database: drop the table, load the dump, read the row again
+    - name: Drop the table that the dump holds
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + ['DROP TABLE molecule.dump_check'] }}"
+      changed_when: true
+
+    - name: Restore the molecule database from its dump
+      vars:
+        dump_file: >-
+          {{ mariadb_test_dumps.files | map(attribute='path')
+             | select('search', '/molecule-(?!2000)' ~ mariadb_test_stamp) | first }}
+      ansible.builtin.shell:
+        cmd: set -o pipefail; zstd --decompress --stdout {{ dump_file | quote }} | mariadb
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Read the restored row
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + ['SELECT note FROM molecule.dump_check WHERE id = 1'] }}"
+      register: mariadb_test_restored
+      changed_when: false
+
+    - name: Check the restored row
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_restored.stdout_lines == ['molecule-dump-row']
+
+    # Restore of the accounts: drop the account, load the accounts dump, log in again
+    - name: Drop the molecule account
+      ansible.builtin.command:
+        argv: "{{ mariadb_test_root_sql + [\"DROP USER 'molecule'@'localhost'\"] }}"
+      changed_when: true
+
+    - name: Restore the accounts from their dump
+      vars:
+        dump_file: >-
+          {{ mariadb_test_dumps.files | map(attribute='path')
+             | select('search', '/system-users-' ~ mariadb_test_stamp) | first }}
+      ansible.builtin.shell:
+        cmd: set -o pipefail; zstd --decompress --stdout {{ dump_file | quote }} | mariadb
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Log in with the restored account and its password
+      ansible.builtin.command:
+        argv: [mariadb, --batch, --skip-column-names, --user=molecule, --database=molecule, --execute,
+               SELECT note FROM dump_check WHERE id = 1]
+      environment:
+        MYSQL_PWD: "{{ mariadb_test_databases[0].password }}"
+      register: mariadb_test_restored_login
+      changed_when: false
+
+    - name: Check the login with the restored account
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_restored_login.stdout_lines == ['molecule-dump-row']
+
+    # Firewall: without application hosts and without /etc/nftables.d, the role leaves it alone.
+    - name: Read the firewall drop-in directory
+      ansible.builtin.stat:
+        path: /etc/nftables.d
+      register: mariadb_test_dropin_dir
+
+    - name: Check that the role did not create the drop-in directory
+      ansible.builtin.assert:
+        that:
+          - not mariadb_test_dropin_dir.stat.exists

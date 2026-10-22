@@ -1,0 +1,58 @@
+#!/bin/bash
+# {{ ansible_managed }} (luminare.infra_edge.mariadb)
+# Dumps every database of the local MariaDB server into its own zstd file, plus one file with the
+# accounts and their grants, then deletes dumps older than {{ mariadb_dump_retention_days }} day(s).
+# Runs as root and logs in over the socket (unix_socket), so no password file is needed.
+# mariadb-dump.service runs it every night; it can also be run by hand.
+#
+#   <dir>/<database>-<UTC time>.sql.zst       one database (CREATE DATABASE, tables, data,
+#                                             routines, events, triggers); restore with
+#                                             zstd -dc <file> | mariadb
+#   <dir>/system-users-<UTC time>.sql.zst     accounts and grants (CREATE USER IF NOT EXISTS ...)
+#
+# A file is written as <name>.partial and renamed when its dump and compression succeeded. Old
+# files are deleted only after every dump of this run succeeded, so a failing run keeps them.
+set -euo pipefail
+umask 077
+
+dump_dir={{ mariadb_dump_dir | quote }}
+retention_minutes={{ (mariadb_dump_retention_days | int) * 1440 }}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+partial=""
+
+cleanup() {
+  if [ -n "$partial" ]; then
+    rm -f -- "$partial"
+  fi
+}
+trap cleanup EXIT
+
+# dump <file name> <mariadb-dump arguments ...>
+dump() {
+  local target="$dump_dir/$1"
+  shift
+  partial="$target.partial"
+  mariadb-dump "$@" | zstd --quiet --stdout > "$partial"
+  mv -- "$partial" "$target"
+  partial=""
+}
+
+databases=$(mariadb --batch --skip-column-names --execute 'SHOW DATABASES')
+
+count=0
+while IFS= read -r -u 3 db; do
+  case "$db" in
+    ""{% for name in mariadb_system_databases %}|{{ name }}{% endfor %}) continue ;;
+  esac
+  # File names keep letters, digits and _; any other character becomes _.
+  dump "${db//[^A-Za-z0-9_]/_}-$stamp.sql.zst" \
+    --single-transaction --routines --events --triggers --databases "$db"
+  count=$((count + 1))
+done 3<<< "$databases"
+
+dump "system-users-$stamp.sql.zst" --system=users --insert-ignore
+
+find "$dump_dir" -maxdepth 1 -type f \( -name '*.sql.zst' -o -name '*.sql.zst.partial' \) \
+  -mmin "+$retention_minutes" -delete
+
+echo "Dumped $count database(s) and the accounts to $dump_dir (kept for {{ mariadb_dump_retention_days }} day(s))."

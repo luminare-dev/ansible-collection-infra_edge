@@ -1,0 +1,64 @@
+# 1. Plants what mysql_secure_installation removes and what the packages of Debian 13 and Ubuntu
+#    24.04 no longer create, so verify_app_hosts.yml can prove that the role removes it: anonymous
+#    accounts, a test database, an old-style row in mysql.db that opens every test_... database
+#    to anonymous logins from any host (no account ''@'%' exists, so removing the anonymous
+#    accounts leaves the row), and root accounts with a password for 127.0.0.1 and for every host.
+#    A count over the socket proves the planted state before the role runs.
+# 2. Applies the role for application hosts: the server on the instance's own address, port 3306
+#    in the firewall drop-in (mariadb_firewall_manage creates /etc/nftables.d), a second account
+#    with read access from that address, and the dump timer switched off.
+- name: Side effect
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Plant anonymous accounts, a test database with open privileges and remote root accounts
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - --execute
+          - >-
+            CREATE USER IF NOT EXISTS ''@'localhost';
+            CREATE USER IF NOT EXISTS ''@'db.example';
+            CREATE DATABASE IF NOT EXISTS test;
+            INSERT IGNORE INTO mysql.db (Host, Db, User, Select_priv, Insert_priv, Create_priv, Drop_priv)
+            VALUES ('%', 'test\\_%', '', 'Y', 'Y', 'Y', 'Y');
+            CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '{{ mariadb_test_root_password }}';
+            GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+            CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '{{ mariadb_test_root_password }}';
+            GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+            FLUSH PRIVILEGES
+      changed_when: true
+
+    - name: Count the planted accounts and test privileges
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - --batch
+          - --skip-column-names
+          - --execute
+          - >-
+            SELECT (SELECT COUNT(*) FROM mysql.user WHERE User = '' OR (User = 'root' AND Host <> 'localhost')),
+            (SELECT COUNT(*) FROM mysql.db WHERE Db = 'test\\_%' AND User = '')
+      register: mariadb_test_planted
+      changed_when: false
+
+    - name: Check that the planted state exists (two anonymous and two remote root accounts, one mysql.db row)
+      ansible.builtin.assert:
+        that:
+          - mariadb_test_planted.stdout.split('\t') == ['4', '1']
+
+    - name: Apply luminare.infra_edge.mariadb for application hosts
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.mariadb
+      vars:
+        mariadb_bind_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+        mariadb_allowed_app_hosts:
+          - "{{ ansible_facts['default_ipv4']['address'] }}/32"
+          - 198.51.100.0/24
+          - 2001:db8::/32
+        mariadb_firewall_manage: true
+        mariadb_dump_enabled: false
+        mariadb_databases: >-
+          {{ mariadb_test_databases + [{'name': 'molecule', 'user': 'molecule_app',
+             'host': ansible_facts['default_ipv4']['address'], 'priv': 'molecule.*:SELECT',
+             'password': mariadb_test_app_password}] }}

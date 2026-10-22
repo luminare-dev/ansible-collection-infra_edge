@@ -59,6 +59,7 @@ and its Molecule scenario.
 | [`base`](roles/base/README.md) | Hardening: unattended security upgrades, admin and automation users with SSH keys only, SSH server through `devsec.hardening.ssh_hardening` (no root login, `AllowGroups sshusers`, `MaxAuthTries 3`), default-drop nftables firewall with a drop-in directory for the other roles, fail2ban for SSH, journal limits (500 MB, 14 days), time zone, locales and host name |
 | [`cloudflared`](roles/cloudflared/README.md) | Outbound tunnel: connector of a remotely managed Cloudflare Tunnel, so the host needs no open inbound port. Pinned cloudflared version installed from its package file after a SHA-256 check and held with an apt pin, tunnel token in a file that only the service user can read (never on a command line), sandboxed systemd service with its metrics listener on `127.0.0.1:2000`; takes over a connector set up with `cloudflared service install` |
 | [`nginx`](roles/nginx/README.md) | Web server: nginx as the reverse proxy behind the tunnel, one site per application on a loopback listener, client address from the connector's `CF-Connecting-IP` header (trusted only from `127.0.0.1`), JSON access log, no version in the `Server` header, security headers, websockets and `nginx -t` before every reload; optional TCP and UDP relays with the stream module, whose ports go into the `base` firewall |
+| [`mariadb`](roles/mariadb/README.md) | Database: MariaDB from the distribution on `127.0.0.1` by default, root with `unix_socket` login and no password, anonymous accounts, the test database and remote root accounts removed, one tuning file (character set, InnoDB sizes, connections, slow query log), databases and accounts from a list through `ansible.mariadb` (passwords never in the output), nightly zstd dumps per database plus the accounts with a two-day retention by a sandboxed systemd timer; optional port 3306 for application hosts in the `base` firewall |
 
 Every pull request runs the template checks, the unit tests (they also build and install the
 collection tarball) and ansible-lint with the production profile; a unit test fails when a role
@@ -97,27 +98,30 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 - [ADR 0012: Why the tunnel token in a file read by a sandboxed unit instead of `cloudflared service install`](docs/adr/0012-tunnel-token-in-a-file-read-by-a-sandboxed-unit.md)
 - [ADR 0013: Why the nginx role owns nginx.conf and checks it on every run instead of a conf.d file and per-file checks](docs/adr/0013-nginx-conf-owned-by-the-role-and-checked-every-run.md)
 - [ADR 0014: Why the client address comes from the loopback connector only instead of X-Forwarded-For or Cloudflare's address ranges](docs/adr/0014-client-address-from-the-loopback-connector-only.md)
+- [ADR 0015: Why ansible.mariadb for the database role instead of community.mysql or own SQL tasks](docs/adr/0015-ansible-mariadb-collection-for-the-database-role.md)
+- [ADR 0016: Why logical dumps per database with a systemd timer instead of physical backups or cron](docs/adr/0016-logical-dumps-per-database-with-a-systemd-timer.md)
 
 ## Supported versions
 
 | Component | Tested with | Supported |
 |---|---|---|
-| ansible-core (control node) | 2.21.5 (CI); 2.20.10 (`base`, `cloudflared` and `nginx` scenarios, locally) | 2.20 and later (`requires_ansible: ">=2.20.0"`) |
+| ansible-core (control node) | 2.21.5 (CI); 2.20.10 (`base`, `cloudflared`, `nginx` and `mariadb` scenarios, locally) | 2.20 and later (`requires_ansible: ">=2.20.0"`) |
 | Python (control node) | 3.12 (Ubuntu 24.04) and 3.14 | 3.12 and later (required by ansible-core 2.20 and 2.21) |
-| Collections the roles use | devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix 2.2.2 | 11.x, 13.x and 2.x (`dependencies` in `galaxy.yml`) |
+| Collections the roles use | devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix 2.2.2, ansible.mariadb 6.0.2 | 11.x, 13.x, 2.x and 6.x (`dependencies` in `galaxy.yml`) |
 | Debian (managed host) | 13 "trixie" Molecule image | 13 |
 | Ubuntu (managed host) | 24.04 "noble" Molecule image | 24.04 LTS |
 | cloudflared (managed host) | 2026.10.2 from Cloudflare's repository (Molecule, x86-64) | 2026.10.2, pinned by the role (`cloudflared_version` with `cloudflared_deb_sha256`) |
 | nginx (managed host) | 1.26.3 (Debian package `1.26.3-3+deb13u10`) and 1.24.0 (Ubuntu package `1.24.0-2ubuntu7.18`), each with its stream module (Molecule, x86-64) | the version of the distribution's package |
+| MariaDB (managed host) | 11.8.6 (Debian package `1:11.8.6-0+deb13u1`) and 10.11.14 (Ubuntu package `1:10.11.14-0ubuntu0.24.04.1`), with PyMySQL 1.1.1 and 1.0.2 from the distributions (Molecule, x86-64) | the version of the distribution's package |
 
 Fixes go into the latest minor release only. See the
 [security policy](https://github.com/luminare-dev/.github/blob/main/SECURITY.md) for reporting.
 
 ## Limitations
 
-- This version contains three roles, `base`, `cloudflared` and `nginx`. They have been applied only
-  to the Debian 13 and Ubuntu 24.04 Molecule containers, not yet to a virtual machine or a cloud
-  server.
+- This version contains four roles, `base`, `cloudflared`, `nginx` and `mariadb`. They have been
+  applied only to the Debian 13 and Ubuntu 24.04 Molecule containers, not yet to a virtual machine
+  or a cloud server.
 - Molecule does not load the nftables ruleset into the kernel or start fail2ban (tag
   `molecule-notest`). Still to be checked on a virtual machine: `nft list ruleset` shows the drop
   policies after a reboot, a port without a drop-in is closed from another host, SSH as root and
@@ -134,6 +138,11 @@ Fixes go into the latest minor release only. See the
   Still to be checked on a virtual machine with a tunnel: the access log shows the visitors'
   addresses, and a relay port is reachable from another host while the site listeners are not
   (see the [role README](roles/nginx/README.md#limitations)).
+- The `mariadb` scenario reaches the server from inside its own container. Still to be checked on
+  virtual machines: an application host reaches port 3306 through the firewall and another host
+  does not, and a nightly run of the timer (the scenario starts the dump service directly). The
+  connections to the database are not encrypted, and the dumps stay on the host until a backup
+  tool copies them (see the [role README](roles/mariadb/README.md#limitations)).
 - Cloudflare's apt index lists only the newest cloudflared version, so the role installs the
   pinned version's package file from the repository's pool; Dependabot cannot bump it
   ([ADR 0011](docs/adr/0011-pinned-cloudflared-package-file-with-checksum.md)).
@@ -144,8 +153,8 @@ Fixes go into the latest minor release only. See the
   shows on the pull request but does not block the merge by itself.
 - Molecule runs in privileged containers, not virtual machines. Kernel-level behaviour (firewall
   rules loaded into the kernel, sysctl values, kernel modules) cannot be proven there.
-- CI runs ansible-core 2.21 only; 2.20 is tested by hand: the `base`, `cloudflared` and `nginx`
-  scenarios passed with 2.20.10 locally ([ADR 0010](docs/adr/0010-requires-ansible-after-a-passing-molecule-run.md)).
+- CI runs ansible-core 2.21 only; 2.20 is tested by hand: the `base`, `cloudflared`, `nginx` and
+  `mariadb` scenarios passed with 2.20.10 locally ([ADR 0010](docs/adr/0010-requires-ansible-after-a-passing-molecule-run.md)).
   Older versions are not supported.
 - The Molecule jobs install `devsec.hardening` from Ansible Galaxy within its version range,
   not from a hash-pinned file like the other test tools, so a Galaxy outage fails the `molecule`
@@ -169,9 +178,13 @@ Fixes go into the latest minor release only. See the
 | Tunnel token in test output | 0 occurrences of the synthetic token and of its secret | searched the complete output of both `cloudflared` runs above and of a converge with `-vvv`, 2026-10-21 |
 | Molecule `nginx`, ansible-core 2.21.5 | Debian 13 and Ubuntu 24.04: converge `changed=11` per instance, idempotence `changed=0`, verify passed (32 tasks per instance: requests through both sites, the websocket and the TCP and UDP relay, the JSON logs, the listeners and the loaded firewall rules), then the removal of a site and of the relay (side effect `changed=5`, 10 checks passed); 5 min 5 s for both platforms | `molecule test` in `roles/nginx` with the tools of `requirements-test.txt` (Python 3.14) and an empty home directory, local Docker, nginx from the distributions' mirrors, 2026-10-21 |
 | Molecule `nginx`, ansible-core 2.20.10 | the same counts; 5 min 0 s for both platforms | the same scenario in the ansible-core 2.20.10 environment of the `base` row above, 2026-10-21 |
-| Unit tests | 135 run: 133 passed, 2 skipped (markdownlint-cli2 not on the PATH; a template-only check) | `python3 -m unittest discover -s tests -v` with Python 3.14, 2026-10-21 |
-| ansible-lint | 0 failures, 0 warnings in 88 files, production profile | `ansible-lint --offline` 26.10.1 in a fresh clone of the repository with an empty home directory (nothing downloaded from Galaxy), 2026-10-22 |
-| Collection tarball | 76 files, about 77 KB; installs into an empty collections path | `ansible-galaxy collection build`, then `ansible-galaxy collection install --no-deps` (ansible-core 2.21.5), 2026-10-22 |
+| Molecule `mariadb`, ansible-core 2.21.5 | Debian 13 and Ubuntu 24.04: converge `changed=12` per instance, idempotence `changed=0`, verify passed (46 tasks per instance: the settings, accounts, listener, slow query log, a run of the dump service with its retention, and the restore of a database and of the accounts from the dumps), then the planted insecure accounts and the setup for application hosts (side effect `changed=12`, then 15 tasks of `verify_app_hosts.yml` passed per instance, including the loaded firewall rules); 4 min 53 s for both platforms | `molecule test` in `roles/mariadb` with the tools of `requirements-test.txt` (Python 3.14) and an empty home directory, local Docker, MariaDB from the distributions' mirrors, 2026-10-22 |
+| Molecule `mariadb`, ansible-core 2.20.10 | the same counts; 5 min 50 s for both platforms | the same scenario in the ansible-core 2.20.10 environment of the `base` row above (rebuilt the same way), 2026-10-22 |
+| Passwords in test output | 0 occurrences of the account password and of its hash | searched the complete output of a `mariadb` converge with `-vvv`, 2026-10-22 |
+| Check mode, `mariadb` | 0 failures: a host without MariaDB reports only the package installation (`changed=1`), a host with the packages but without the role reports the changes the role would make, and a converged host `changed=0` | `molecule converge -- --check` on the scenario's instances in these three states, 2026-10-22 |
+| Unit tests | 147 run: 145 passed, 2 skipped (markdownlint-cli2 not on the PATH; a template-only check); they include a run of the `mariadb` dump script with stand-ins for the MariaDB tools | `python3 -m unittest discover -s tests -v` with Python 3.14, 2026-10-22 |
+| ansible-lint | 0 failures, 0 warnings in 114 files, production profile | `ansible-lint --offline` 26.10.1 in a fresh clone of the repository with an empty home directory (nothing downloaded from Galaxy), 2026-10-22 |
+| Collection tarball | 97 files, about 100 KB; installs into an empty collections path | `ansible-galaxy collection build`, then `ansible-galaxy collection install --no-deps` (ansible-core 2.21.5), 2026-10-22 |
 | Test tools install | 47 packages in 51 s, every file checked against its sha256 | `pip install --require-hashes --only-binary=:all:` of `requirements-dev.txt` and `requirements-test.txt` with Python 3.12 in an `ubuntu:24.04` container, 2026-10-21 |
 
 ## Documentation and links

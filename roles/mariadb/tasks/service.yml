@@ -1,0 +1,12 @@
+# The server must run before the role changes accounts and databases. A pending restart for a
+# changed tuning file runs here (flush), so the rest of the role talks to the configured server,
+# and a configuration that the server refuses stops the play before anything else changes.
+
+- name: Enable and start MariaDB
+  ansible.builtin.systemd_service:
+    name: "{{ mariadb_service }}"
+    enabled: true
+    state: started
+
+- name: Restart MariaDB now if its configuration changed
+  ansible.builtin.meta: flush_handlers

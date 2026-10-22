@@ -1,0 +1,40 @@
+# luminare.infra_edge.mariadb: the order matters. The checks run before any change, the server
+# runs with its tuning file before the role changes accounts, and the databases exist before the
+# dump timer can run.
+
+- name: Check the inputs before changing anything
+  ansible.builtin.import_tasks: assert.yml
+  tags: [mariadb, always]
+
+- name: Install MariaDB
+  ansible.builtin.import_tasks: install.yml
+  tags: [mariadb, mariadb_install]
+
+# In check mode on a host without the packages there is no server yet to configure or to ask, so
+# the run only reports the installation.
+- name: Configure, secure and back up the server
+  when: not (ansible_check_mode and mariadb_install_result | default({}) is changed)
+  block:
+    - name: Write the tuning file
+      ansible.builtin.import_tasks: config.yml
+      tags: [mariadb, mariadb_config]
+
+    - name: Run MariaDB with its configuration
+      ansible.builtin.import_tasks: service.yml
+      tags: [mariadb, mariadb_config, mariadb_service]
+
+    - name: Remove anonymous accounts, the test database and remote root accounts
+      ansible.builtin.import_tasks: secure.yml
+      tags: [mariadb, mariadb_secure]
+
+    - name: Create the databases and accounts
+      ansible.builtin.import_tasks: databases.yml
+      tags: [mariadb, mariadb_databases]
+
+    - name: Set up the nightly dumps
+      ansible.builtin.import_tasks: dump.yml
+      tags: [mariadb, mariadb_dump]
+
+- name: Open port 3306 for the application hosts in the firewall drop-in
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [mariadb, mariadb_firewall]

@@ -1,0 +1,42 @@
+# {{ ansible_managed }} (luminare.infra_edge.mariadb)
+# Dumps every database into {{ mariadb_dump_dir }} ({{ mariadb_dump_script }}). Started by
+# mariadb-dump.timer, or by hand with "systemctl start mariadb-dump.service".
+[Unit]
+Description=Dump the MariaDB databases into {{ mariadb_dump_dir }}
+After={{ mariadb_service }}
+
+[Service]
+Type=oneshot
+ExecStart={{ mariadb_dump_script }}
+# Root logs in over the socket (unix_socket); the dumps stay readable by root only.
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+
+# Sandbox: no capabilities and no network (the socket is a file), a read-only system except the
+# dump folder, no home directories, private /tmp and /dev.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths={{ mariadb_dump_dir }}
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

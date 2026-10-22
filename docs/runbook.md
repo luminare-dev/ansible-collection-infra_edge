@@ -43,6 +43,26 @@ install on a host, and the failures of its CI and release automation.
 | **Mitigation** | Start or restart the application. If nginx refuses its configuration, move the file that `nginx -t` names out of `/etc/nginx/sites-enabled/` or `/etc/nginx/conf.d/`, then `systemctl start nginx`. |
 | **Fix** | Correct the `upstream` of the site or the application's listener, or the input that produced the broken file, and run the playbook again; it checks the whole configuration before it reloads nginx. |
 
+## MariaDB does not run
+
+| | |
+|---|---|
+| **Meaning** | `systemctl status mariadb` on a host with `luminare.infra_edge.mariadb` shows `failed` or `activating`, or the play stopped at "Check that mariadb runs after the restart". |
+| **Impact** | Every application that uses a database on this host fails; the nightly dump fails too. |
+| **Diagnosis** | `journalctl -u mariadb -n 50` names the reason: `Can't start server: Bind on TCP/IP port` points to `mariadb_bind_address` (an address the host does not have, or port 3306 taken), `unknown variable` or `COLLATION ... is not valid` to `/etc/mysql/mariadb.conf.d/60-tuning.cnf`, `Cannot allocate memory` or `mmap` errors to `mariadb_innodb_buffer_pool_size`, `No space left on device` to the disk (`df -h /var/lib/mysql`). |
+| **Mitigation** | Move `/etc/mysql/mariadb.conf.d/60-tuning.cnf` out of the folder and `systemctl start mariadb`: the server starts with the package's settings (on `127.0.0.1`). |
+| **Fix** | Correct the variable in the inventory and run the playbook again; it writes the file back and restarts the server. |
+
+## Nightly MariaDB dump failed
+
+| | |
+|---|---|
+| **Meaning** | `systemctl status mariadb-dump.service` shows `failed`, or `/var/backups/mariadb` has no file from the last night. |
+| **Impact** | No new dump: the dumps from earlier nights stay (a failed run deletes nothing), so a backup tool copies only older data. |
+| **Diagnosis** | `journalctl -u mariadb-dump.service -n 50` shows the error of `mariadb-dump`, `mariadb` or `zstd`: `Can't connect to local server through socket` means the server did not run at that time, `Access denied for user 'root'@'localhost'` that root lost its `unix_socket` login, `No space left on device` the disk of the dump folder. `systemctl list-timers mariadb-dump.timer` shows the last and next run. |
+| **Mitigation** | Fix the cause and run `systemctl start mariadb-dump.service` once; it writes a complete set and then applies the retention. |
+| **Fix** | For a full disk, lower `mariadb_dump_retention_days` or move `mariadb_dump_dir` to a larger disk; for root's login see [Troubleshooting](troubleshooting.md). |
+
 ## Security updates are not installed
 
 | | |

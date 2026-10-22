@@ -1,0 +1,55 @@
+# What mysql_secure_installation does, without a root password: root@localhost keeps the
+# packages' unix_socket login (only the operating system's root user gets in, over the socket),
+# anonymous accounts and the test database with its privileges are removed, and root may log in
+# from localhost only. The ansible.mariadb modules connect as root over the socket
+# (docs/adr/0015); config_file "" keeps a ~/.my.cnf of the remote user out of it.
+
+- name: Remove the anonymous accounts
+  ansible.mariadb.mariadb_user:
+    name: ""
+    host_all: true
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+
+- name: Remove the test database
+  ansible.mariadb.mariadb_db:
+    name: test
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+
+# Older installers granted every account access to "test" and every "test_..." database through
+# rows in mysql.db; DROP DATABASE leaves them in place. Reports a change only when rows were
+# deleted. The module has no check mode, so check mode skips it.
+- name: Remove the privileges on test databases
+  ansible.mariadb.mariadb_query:
+    query:
+      - DELETE FROM mysql.db WHERE Db = 'test' OR Db = 'test\\_%'
+      - FLUSH PRIVILEGES
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+
+- name: Read the accounts
+  ansible.mariadb.mariadb_info:
+    filter: [users]
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+  register: mariadb_accounts
+
+# root@127.0.0.1, root@::1, root@<host name> or root@% would accept a password over TCP.
+- name: Remove root accounts for every host except localhost
+  ansible.mariadb.mariadb_user:
+    name: root
+    host: "{{ item }}"
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+    login_user: root
+    config_file: ""
+  loop: >-
+    {{ mariadb_accounts.users | dict2items | selectattr('value.root', 'defined')
+       | map(attribute='key') | reject('equalto', 'localhost') | list }}
