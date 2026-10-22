@@ -8,6 +8,13 @@ the Conventional Commit titles of the merged pull requests; do not edit entries 
 <!-- release-please inserts each new release above the first line that starts with "## ["
      (or "## " and a digit). Keep the "Origin" entry below as the last entry of this file. -->
 
+## [0.2.1](https://github.com/luminare-dev/ansible-collection-infra_edge/compare/v0.2.0...v0.2.1) (2026-10-22)
+
+
+### Fixed
+
+* record the verified release downloads in the install guide ([#12](https://github.com/luminare-dev/ansible-collection-infra_edge/issues/12)) ([4c8f000](https://github.com/luminare-dev/ansible-collection-infra_edge/commit/4c8f00056ed5633e37cb15a557ba635f92a95fa4))
+
 ## [0.2.0](https://github.com/luminare-dev/ansible-collection-infra_edge/compare/v0.1.0...v0.2.0) (2026-10-22)
 
 

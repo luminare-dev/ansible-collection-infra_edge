@@ -44,7 +44,7 @@ From a release tag (needs git):
 ```bash
 python3 -m venv ~/.venvs/edge && . ~/.venvs/edge/bin/activate
 pip install "ansible-core>=2.21,<2.22"
-ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-infra_edge.git,v0.2.0
+ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-infra_edge.git,v0.2.1
 ```
 
 In a project, pin the tag in `requirements.yml` and install it with
@@ -54,15 +54,15 @@ In a project, pin the tag in `requirements.yml` and install it with
 collections:
   - name: https://github.com/luminare-dev/ansible-collection-infra_edge.git
     type: git
-    version: v0.2.0
+    version: v0.2.1
 ```
 
 From the release tarball (needs the GitHub CLI for the download and the attestation check):
 
 ```bash
-gh release download v0.2.0 --repo luminare-dev/ansible-collection-infra_edge
+gh release download v0.2.1 --repo luminare-dev/ansible-collection-infra_edge
 sha256sum -c SHA256SUMS
-ansible-galaxy collection install luminare-infra_edge-0.2.0.tar.gz
+ansible-galaxy collection install luminare-infra_edge-0.2.1.tar.gz
 ```
 <!-- x-release-please-end -->
 

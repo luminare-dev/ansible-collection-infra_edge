@@ -61,7 +61,7 @@ your host, SSH keys, management networks, site, database and backup repository i
 <!-- x-release-please-start-version -->
 ```bash
 python3 -m venv ~/.venvs/edge && . ~/.venvs/edge/bin/activate && pip install "ansible-core>=2.21,<2.22"
-ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-infra_edge.git,v0.2.0
+ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-infra_edge.git,v0.2.1
 cp -r ~/.ansible/collections/ansible_collections/luminare/infra_edge/examples/edge edge
 ansible-vault create edge/group_vars/edge/vault.yml   # the six vault_* values of the example
 read -rs TUNNEL_TOKEN && export TUNNEL_TOKEN && ansible-playbook -i edge/inventory.yml luminare.infra_edge.edge --ask-vault-pass
