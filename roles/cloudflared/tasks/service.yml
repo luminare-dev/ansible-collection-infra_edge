@@ -1,0 +1,45 @@
+# The role's unit replaces /etc/systemd/system/cloudflared.service, the file that
+# "cloudflared service install" writes (older releases put the token on its command line), and
+# removes the self-update units of that installer, which would replace the pinned version. So a
+# connector that cloud-init or an operator set up that way is taken over on the first run.
+
+- name: Find the self-update units of "cloudflared service install"
+  ansible.builtin.stat:
+    path: /etc/systemd/system/{{ item }}
+  loop: "{{ cloudflared_autoupdate_units }}"
+  register: cloudflared_autoupdate_files
+
+# The service has no [Install] section, so only the timer is disabled.
+- name: Stop the self-update units and disable the timer
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    state: stopped
+    enabled: "{{ false if item.item.endswith('.timer') else omit }}"
+  loop: "{{ cloudflared_autoupdate_files.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Remove the self-update units
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ item.item }}
+    state: absent
+  loop: "{{ cloudflared_autoupdate_files.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Write the systemd unit (token from the token file, sandboxed, metrics on one address)
+  ansible.builtin.template:
+    src: cloudflared.service.j2
+    dest: "{{ cloudflared_unit_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart cloudflared
+
+# With Type=notify, starting waits until the tunnel has a connection to Cloudflare's edge.
+- name: Enable and start the connector, or stop and disable it
+  ansible.builtin.systemd_service:
+    name: cloudflared.service
+    enabled: "{{ cloudflared_service_enabled }}"
+    state: "{{ cloudflared_service_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true

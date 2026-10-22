@@ -1,0 +1,19 @@
+# Molecule scenario of luminare.infra_edge.cloudflared. The driver, both platforms (Debian 13 and
+# Ubuntu 24.04) and the test sequence come from .config/molecule/config.yml; run it with
+#   cd roles/cloudflared && export MOLECULE_ROLE=cloudflared && molecule test
+# The connector really starts, with a synthetic token, in a network namespace that has only a
+# loopback interface (prepare.yml), so nothing it sends can reach Cloudflare. The only network
+# traffic to Cloudflare is the download of the package file and the apt index from
+# pkg.cloudflare.com.
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # A synthetic token in the format of a tunnel token, base64 of {"a": account tag,
+        # "t": tunnel ID, "s": secret}; it belongs to no account and no tunnel. converge.yml
+        # passes it to the role, and verify.yml looks for it where it must not appear.
+        cloudflared_test_token: >-
+          {{ {'a': '0' * 32, 't': '00000000-0000-0000-0000-000000000000',
+              's': 'molecule-only-secret' | b64encode} | to_json | b64encode }}
+scenario:
+  name: default

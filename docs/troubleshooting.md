@@ -63,6 +63,38 @@ would end up in `/etc/hosts` or make `hostnamectl` fail.
 **Fix:** set `base_hostname` for the host to a valid name (for example `edge-1` or
 `edge-1.example.com`), or to `""` to leave the host name and `/etc/hosts` unchanged.
 
+## The cloudflared role stops with "Set cloudflared_token"
+
+**Cause:** `cloudflared_token` is empty (by default it is read from the environment variable
+`TUNNEL_TOKEN` of the control node, and that variable is not set in the shell that runs
+`ansible-playbook`), or the value is not a tunnel token. A tunnel token is base64-encoded JSON and
+starts with `eyJ`; the tunnel ID or an API token does not work.
+
+**Fix:** copy the token of the remotely managed tunnel from the Cloudflare dashboard (it is part
+of the install command shown for the tunnel) and export it without echo in the same shell:
+
+```bash
+read -rs TUNNEL_TOKEN && export TUNNEL_TOKEN
+```
+
+## The cloudflared role fails at "Download the package file and check its SHA-256"
+
+**Cause:** `cloudflared_version` was changed without `cloudflared_deb_sha256` (the checksum does
+not match the new file), or the version does not exist in Cloudflare's repository pool.
+
+**Fix:** take both SHA-256 values (`cloudflared-linux-amd64.deb`, `cloudflared-linux-arm64.deb`)
+from the checksum list of the same GitHub release and set them together with the version (see
+"Upgrading cloudflared" in the [role README](../roles/cloudflared/README.md#upgrading-cloudflared)).
+
+## The cloudflared role fails at "Enable and start the connector" or "Restart cloudflared"
+
+**Cause:** the unit has `Type=notify`, so systemd waits for the tunnel's first connection to
+Cloudflare's edge and gives up after 30 seconds: the token is wrong or was rotated, or outbound
+port 7844 is blocked.
+
+**Fix:** read the reason with `journalctl -u cloudflared -n 50` on the host, then follow
+"Tunnel connector down or not connected" in the [runbook](runbook.md).
+
 ## The role 'devsec.hardening.ssh_hardening' was not found
 
 ```text

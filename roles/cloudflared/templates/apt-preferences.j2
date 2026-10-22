@@ -1,0 +1,6 @@
+Explanation: {{ ansible_managed }} (luminare.infra_edge.cloudflared)
+Explanation: keeps cloudflared at the version the role installed; apt upgrade and
+Explanation: unattended-upgrades do not replace it with a newer one from the repository
+Package: cloudflared
+Pin: version {{ cloudflared_version }}
+Pin-Priority: 1001

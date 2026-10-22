@@ -1,0 +1,95 @@
+# Test fixtures:
+# 1. What "cloudflared service install <token>" leaves on a host (for example through cloud-init):
+#    a unit with the token on its command line, as older releases wrote it, and the self-update
+#    service and timer, enabled and started. The converge has to replace and remove them.
+# 2. A drop-in that keeps the connector away from every network: the service gets its own network
+#    namespace with only a loopback interface (PrivateNetwork). The tunnel can then never connect,
+#    so systemd must not wait for cloudflared's readiness message (Type=simple instead of the
+#    unit's Type=notify), and converge.yml points cloudflared at an edge address on the loopback
+#    interface, where it keeps retrying instead of looking up Cloudflare's edge and exiting.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Write a unit like "cloudflared service install" of older releases (token on the command line)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cloudflared.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=cloudflared
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          TimeoutStartSec=0
+          Type=notify
+          ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token molecule-old-token-on-the-command-line
+          Restart=on-failure
+          RestartSec=5s
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Write the self-update service of the installer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cloudflared-update.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Update cloudflared
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=/usr/bin/cloudflared update
+
+    - name: Write the self-update timer of the installer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cloudflared-update.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Update cloudflared
+
+          [Timer]
+          OnCalendar=daily
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable the old unit and start the self-update timer, as the installer does
+      ansible.builtin.systemd_service:
+        name: "{{ item.name }}"
+        enabled: true
+        state: "{{ item.state | default(omit) }}"
+        daemon_reload: true
+      loop:
+        - name: cloudflared.service
+        - name: cloudflared-update.timer
+          state: started
+
+    # systemd-networkd manages no interface in the containers, so its wait-online service would
+    # hold network-online.target, which the unit waits for, for two minutes.
+    - name: Mask systemd-networkd-wait-online (container network, not configured by networkd)
+      ansible.builtin.systemd_service:
+        name: systemd-networkd-wait-online.service
+        masked: true
+
+    - name: Create the drop-in directory of the unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/cloudflared.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Keep the connector in a network namespace with only a loopback interface
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cloudflared.service.d/90-molecule-no-network.conf
+        mode: "0644"
+        content: |
+          # Molecule only (roles/cloudflared/molecule/default/prepare.yml): no network but loopback,
+          # so the synthetic token never reaches Cloudflare. Without a connection cloudflared never
+          # reports readiness, so systemd treats the service as started when the process runs.
+          [Service]
+          PrivateNetwork=yes
+          Type=simple

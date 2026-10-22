@@ -1,0 +1,33 @@
+# Internal values of luminare.infra_edge.cloudflared (not meant to be overridden).
+
+# Supported managed hosts: distribution -> major version.
+cloudflared_supported_platforms:
+  Debian: ["13"]
+  Ubuntu: ["24"]
+
+# Debian architecture of the package file for each machine type that Ansible reports.
+cloudflared_deb_architectures:
+  x86_64: amd64
+  aarch64: arm64
+
+# The same paths as "cloudflared service install <token>" and Cloudflare's apt instructions use,
+# so the role takes over a connector that was set up that way (for example by cloud-init).
+cloudflared_config_dir: /etc/cloudflared
+cloudflared_token_file: /etc/cloudflared/token
+cloudflared_unit_file: /etc/systemd/system/cloudflared.service
+cloudflared_apt_keyring: /usr/share/keyrings/cloudflare-main.gpg
+cloudflared_apt_source_file: /etc/apt/sources.list.d/cloudflared.list
+cloudflared_apt_preferences_file: /etc/apt/preferences.d/cloudflared
+
+# The units that "cloudflared service install" adds for daily self-updates, which would replace
+# the pinned version.
+cloudflared_autoupdate_units:
+  - cloudflared-update.timer
+  - cloudflared-update.service
+
+# The package file is downloaded here, installed and removed again.
+cloudflared_download_dir: /var/cache/luminare-cloudflared
+
+# Characters allowed in cloudflared_extra_args (no spaces, quotes, $ or %, which systemd would
+# interpret in ExecStart).
+cloudflared_extra_arg_pattern: '^[A-Za-z0-9._:/=@,+-]+$'
