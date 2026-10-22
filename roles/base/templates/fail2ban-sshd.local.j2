@@ -1,0 +1,14 @@
+# {{ ansible_managed }} (luminare.infra_edge.base)
+[DEFAULT]
+banaction = nftables-multiport
+banaction_allports = nftables-allports
+# Loopback and the management networks are never banned.
+ignoreip = 127.0.0.1/8 ::1{{ (' ' ~ (base_mgmt_cidrs | join(' '))) if base_mgmt_cidrs else '' }}
+
+[sshd]
+enabled = true
+backend = systemd
+port = {{ base_ssh_port }}
+maxretry = {{ base_fail2ban_maxretry }}
+findtime = {{ base_fail2ban_findtime }}
+bantime = {{ base_fail2ban_bantime }}

@@ -1,6 +1,8 @@
 # 0007. One hash-pinned test toolchain instead of separate installs
 
-- **Status:** accepted
+- **Status:** accepted; amended by [ADR 0008](0008-ssh-hardening-through-devsec-hardening.md)
+  (`devsec.hardening` comes from Ansible Galaxy) and
+  [ADR 0010](0010-requires-ansible-after-a-passing-molecule-run.md) (`requires_ansible: ">=2.20.0"`)
 - **Date:** 2026-10-21
 
 ## Context

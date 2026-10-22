@@ -1,0 +1,54 @@
+# Defaults of luminare.infra_edge.base. Every variable is described, with its type, in
+# meta/argument_specs.yml; the tables in README.md and docs/configuration.md are generated from it.
+
+# System
+base_timezone: Europe/Vienna
+base_locales:
+  - en_US.UTF-8
+base_default_locale: en_US.UTF-8
+base_hostname: "{{ inventory_hostname }}"
+base_manage_hosts_file: true
+base_timesyncd_enabled: true
+base_qemu_guest_agent: false
+
+# Unattended security upgrades
+base_unattended_upgrades_enabled: true
+base_unattended_upgrades_origins: []
+base_unattended_reboot: false
+base_unattended_reboot_time: "04:30"
+
+# Users
+base_admin_user: admin
+base_admin_ssh_keys: []
+base_admin_password_hash: ""
+base_automation_user: ansible
+base_automation_ssh_keys: []
+base_automation_sudo_nopasswd: true
+base_ssh_group: sshusers
+
+# SSH server (devsec.hardening.ssh_hardening)
+base_ssh_hardening_enabled: true
+base_ssh_port: 22
+base_ssh_listen_addresses:
+  - 0.0.0.0
+  - "::"
+base_sshd_max_auth_tries: 3
+
+# Operating system hardening (devsec.hardening.os_hardening), opt-in
+base_os_hardening_enabled: false
+
+# Firewall (nftables)
+base_firewall_enabled: true
+base_ssh_allow_mode: mgmt_cidrs
+base_mgmt_cidrs: []
+
+# fail2ban
+base_fail2ban_enabled: true
+base_fail2ban_maxretry: 5
+base_fail2ban_findtime: 10m
+base_fail2ban_bantime: 1h
+
+# journald
+base_journald_persistent: true
+base_journald_system_max_use: 500M
+base_journald_max_retention: 14day

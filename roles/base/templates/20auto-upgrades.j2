@@ -1,0 +1,3 @@
+// {{ ansible_managed }} (luminare.infra_edge.base)
+APT::Periodic::Update-Package-Lists "{{ base_unattended_upgrades_enabled | ternary('1', '0') }}";
+APT::Periodic::Unattended-Upgrade "{{ base_unattended_upgrades_enabled | ternary('1', '0') }}";

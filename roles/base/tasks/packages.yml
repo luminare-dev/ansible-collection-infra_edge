@@ -1,0 +1,20 @@
+# The fail2ban jail bans with the nftables actions, which call nft, so fail2ban needs nftables
+# also when base_firewall_enabled is false (fail2ban itself only recommends nftables or iptables).
+- name: Install the base packages
+  ansible.builtin.apt:
+    name: >-
+      {{ base_packages
+         + (['nftables'] if base_firewall_enabled or base_fail2ban_enabled else [])
+         + (['fail2ban', 'python3-systemd'] if base_fail2ban_enabled else [])
+         + (['systemd-timesyncd'] if base_timesyncd_enabled else [])
+         + (['qemu-guest-agent'] if base_qemu_guest_agent else []) }}
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# A freshly installed dbus package does not start the system bus; timedatectl and hostnamectl
+# need it. On a booted server it already runs.
+- name: Start the D-Bus system bus
+  ansible.builtin.systemd_service:
+    name: dbus.socket
+    state: started

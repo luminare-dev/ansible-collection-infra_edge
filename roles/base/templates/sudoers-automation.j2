@@ -1,0 +1,4 @@
+# {{ ansible_managed }} (luminare.infra_edge.base)
+# The automation user may run every command as root{{ ' without a password' if base_automation_sudo_nopasswd else '' }}.
+# The admin user gets sudo with its password through the "sudo" group.
+{{ base_automation_user }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if base_automation_sudo_nopasswd else '' }}ALL

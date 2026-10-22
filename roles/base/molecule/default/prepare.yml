@@ -1,0 +1,51 @@
+# Test fixtures for the verify step: a throwaway SSH key pair generated in the instance (no key
+# material in the repository), the same public key for root and for a user outside the SSH
+# group, so that verify.yml can show that both are refused. Root is also put into the SSH group,
+# so that only PermitRootLogin can refuse it, and ufw is installed, so that converge has to
+# remove it.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install the SSH client and ufw
+      ansible.builtin.apt:
+        name:
+          - openssh-client
+          - ufw
+        state: present
+        update_cache: true
+
+    - name: Generate the test key pair
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N "" -C molecule-test -f /root/molecule-key
+        creates: /root/molecule-key
+
+    - name: Read the test public key
+      ansible.builtin.slurp:
+        src: /root/molecule-key.pub
+      register: base_test_key
+
+    - name: Create the SSH group (base_ssh_group, which converge then keeps)
+      ansible.builtin.group:
+        name: sshusers
+        state: present
+
+    - name: Put root into the SSH group, so that AllowGroups alone would admit it
+      ansible.builtin.user:
+        name: root
+        groups: [sshusers]
+        append: true
+
+    - name: Create a user that is not in the SSH group
+      ansible.builtin.user:
+        name: outsider
+        shell: /bin/bash
+        create_home: true
+
+    - name: Give root and the outsider the test key
+      ansible.posix.authorized_key:
+        user: "{{ item }}"
+        key: "{{ base_test_key.content | b64decode | trim }}"
+      loop:
+        - root
+        - outsider

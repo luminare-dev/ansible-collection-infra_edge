@@ -44,9 +44,19 @@ ansible-galaxy collection list luminare.infra_edge
 ```
 <!-- x-release-please-end -->
 
-[docs/install.md](docs/install.md) also covers the release tarball and how to verify it.
+[docs/install.md](docs/install.md) also covers the release tarball and how to verify it. Each
+role's README has an example playbook, starting with
+[`luminare.infra_edge.base`](roles/base/README.md#example-playbook).
 
 ## How it works
+
+The collection holds one role per part of an edge host. Each role has its own README with the
+variables (generated from its `meta/argument_specs.yml`), the controls or settings it applies
+and its Molecule scenario.
+
+| Role | What it does |
+|---|---|
+| [`base`](roles/base/README.md) | Hardening: unattended security upgrades, admin and automation users with SSH keys only, SSH server through `devsec.hardening.ssh_hardening` (no root login, `AllowGroups sshusers`, `MaxAuthTries 3`), default-drop nftables firewall with a drop-in directory for the other roles, fail2ban for SSH, journal limits (500 MB, 14 days), time zone, locales and host name |
 
 Every pull request runs the template checks, the unit tests (they also build and install the
 collection tarball) and ansible-lint with the production profile; a unit test fails when a role
@@ -78,13 +88,17 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 - [ADR 0005: Why git tags and release tarballs instead of a package index upload](docs/adr/0005-git-tags-and-release-tarballs.md)
 - [ADR 0006: Why Molecule in systemd containers instead of virtual machines](docs/adr/0006-molecule-in-systemd-containers.md)
 - [ADR 0007: Why one hash-pinned test toolchain instead of separate installs](docs/adr/0007-one-hash-pinned-test-toolchain.md)
+- [ADR 0008: Why SSH hardening through devsec.hardening instead of an own sshd drop-in](docs/adr/0008-ssh-hardening-through-devsec-hardening.md)
+- [ADR 0009: Why one nftables ruleset with a drop-in directory instead of a firewall per role](docs/adr/0009-nftables-ruleset-with-drop-in-directory.md)
+- [ADR 0010: Why `requires_ansible` 2.20 after a passing Molecule run instead of the CI version only](docs/adr/0010-requires-ansible-after-a-passing-molecule-run.md)
 
 ## Supported versions
 
 | Component | Tested with | Supported |
 |---|---|---|
-| ansible-core (control node) | 2.21.5 | 2.21 and later (`requires_ansible: ">=2.21.0"`) |
-| Python (control node) | 3.12 (Ubuntu 24.04) and 3.14 | 3.12 and later (required by ansible-core 2.21) |
+| ansible-core (control node) | 2.21.5 (CI); 2.20.10 (`base` scenario, locally) | 2.20 and later (`requires_ansible: ">=2.20.0"`) |
+| Python (control node) | 3.12 (Ubuntu 24.04) and 3.14 | 3.12 and later (required by ansible-core 2.20 and 2.21) |
+| Collections the roles use | devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix 2.2.2 | 11.x, 13.x and 2.x (`dependencies` in `galaxy.yml`) |
 | Debian (managed host) | 13 "trixie" Molecule image | 13 |
 | Ubuntu (managed host) | 24.04 "noble" Molecule image | 24.04 LTS |
 
@@ -93,15 +107,28 @@ Fixes go into the latest minor release only. See the
 
 ## Limitations
 
-- This version contains no role yet: it is the collection skeleton with its Molecule harness, CI
-  and release automation, so nothing has been applied to a managed host.
+- This version contains one role, `base`. It has been applied only to the Debian 13 and
+  Ubuntu 24.04 Molecule containers, not yet to a virtual machine or a cloud server.
+- Molecule does not load the nftables ruleset into the kernel or start fail2ban (tag
+  `molecule-notest`). Still to be checked on a virtual machine: `nft list ruleset` shows the drop
+  policies after a reboot, a port without a drop-in is closed from another host, SSH as root and
+  with a password is refused from another host (in Molecule it is refused over `127.0.0.1`), and
+  fail2ban bans an address after failed logins. The opt-in `base_os_hardening_enabled` is not
+  tested at all (see the [role README](roles/base/README.md#limitations)).
+- The `base` firewall flushes the whole ruleset and drops forwarded traffic, so it is not meant
+  for hosts that run Docker or route traffic.
 - The `molecule` check is not yet a required check of the `main` ruleset (the required checks
   are `ci / lint-test`, `secrets / gitleaks`, `pr / pr-title` and `DCO`), so a failing scenario
   shows on the pull request but does not block the merge by itself.
 - Molecule runs in privileged containers, not virtual machines. Kernel-level behaviour (firewall
   rules loaded into the kernel, sysctl values, kernel modules) cannot be proven there.
-- Only ansible-core 2.21 is tested; `requires_ansible` is lowered only after an older
-  ansible-core passes a Molecule converge.
+- CI runs ansible-core 2.21 only; 2.20 is tested by hand: the `base` scenario passed with
+  2.20.10 locally ([ADR 0010](docs/adr/0010-requires-ansible-after-a-passing-molecule-run.md)).
+  Older versions are not supported.
+- The Molecule jobs install `devsec.hardening` from Ansible Galaxy within its version range,
+  not from a hash-pinned file like the other test tools, so a Galaxy outage fails the `molecule`
+  check ([ADR 0008](docs/adr/0008-ssh-hardening-through-devsec-hardening.md)). The required
+  `ci / lint-test` check runs ansible-lint with `--offline` and does not use Galaxy.
 - Only x86-64 is tested (the GitHub `ubuntu-24.04` runner and the local test machine).
 - `ansible-test sanity` is not run: the collection has no plugins or modules, and ansible-lint
   checks the roles and the metadata.
@@ -113,9 +140,11 @@ Fixes go into the latest minor release only. See the
 
 | What | Value | How it was measured |
 |---|---|---|
-| Unit tests | 114 run: 112 passed, 2 skipped (markdownlint-cli2 not on the PATH; a template-only check) | `python3 -m unittest discover -s tests -v` with Python 3.14, 2026-10-21 |
-| ansible-lint | 0 failures, 0 warnings in 18 files, production profile | `ansible-lint` 26.10.1 from the repository root, 2026-10-21 |
-| Collection tarball | 21 files, 19 KB; installs into an empty collections path | `ansible-galaxy collection build`, then `ansible-galaxy collection install --no-deps` (ansible-core 2.21.5), 2026-10-21 |
+| Molecule `base`, ansible-core 2.21.5 | Debian 13 and Ubuntu 24.04: converge `changed=30` per instance, idempotence `changed=0`, verify passed (`ok=95`, `rescued=6` per instance: the checks, including SSH logins over `127.0.0.1`, and the role's input checks with 8 host names, 6 of them refused); 5 min 16 s for both platforms | `molecule test` in `roles/base` with the tools of `requirements-test.txt` (Python 3.14) and an empty home directory, local Docker, 2026-10-22 |
+| Molecule `base`, ansible-core 2.20.10 | Debian 13 and Ubuntu 24.04: converge `changed=30` per instance, idempotence `changed=0`, verify passed (`ok=95`, `rescued=6` per instance); 7 min 35 s for both platforms | the same scenario in a separate virtual environment (Python 3.14) with ansible-core 2.20.10, Molecule 26.10.0, molecule-plugins 26.10.12 and the collections of the `ansible` 14.5.0 package (installed with `--no-deps`), an empty home directory, while other Molecule scenarios ran on the same Docker daemon, 2026-10-22 |
+| Unit tests | 118 run: 116 passed, 2 skipped (markdownlint-cli2 not on the PATH; a template-only check) | `python3 -m unittest discover -s tests -v` with Python 3.14, 2026-10-21 |
+| ansible-lint | 0 failures, 0 warnings in 48 files, production profile | `ansible-lint --offline` 26.10.1 in a fresh clone of the repository with an empty home directory (nothing downloaded from Galaxy), 2026-10-22 |
+| Collection tarball | 46 files, about 41 KB; installs into an empty collections path | `ansible-galaxy collection build`, then `ansible-galaxy collection install --no-deps` (ansible-core 2.21.5), 2026-10-22 |
 | Test tools install | 47 packages in 51 s, every file checked against its sha256 | `pip install --require-hashes --only-binary=:all:` of `requirements-dev.txt` and `requirements-test.txt` with Python 3.12 in an `ubuntu:24.04` container, 2026-10-21 |
 
 ## Documentation and links

@@ -1,0 +1,12 @@
+# Molecule scenario of luminare.infra_edge.base. The driver, both platforms (Debian 13 and Ubuntu
+# 24.04) and the test sequence come from .config/molecule/config.yml; run it with
+#   cd roles/base && export MOLECULE_ROLE=base && molecule test
+# The dependency step installs devsec.hardening from requirements.yml next to this file.
+# Tasks tagged molecule-notest (loading nftables, starting fail2ban) are skipped.
+dependency:
+  name: galaxy
+  options:
+    # One requirements file for roles and collections (the default would look for collections.yml).
+    requirements-file: ${MOLECULE_SCENARIO_DIRECTORY}/requirements.yml
+scenario:
+  name: default

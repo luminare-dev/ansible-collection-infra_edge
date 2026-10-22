@@ -1,0 +1,24 @@
+- name: Converge
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Read the test public key that prepare.yml generated
+      ansible.builtin.slurp:
+        src: /root/molecule-key.pub
+      register: base_test_key
+
+    - name: Apply luminare.infra_edge.base
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.base
+      vars:
+        base_admin_ssh_keys:
+          - "{{ base_test_key.content | b64decode | trim }}"
+        base_automation_ssh_keys:
+          - "{{ base_test_key.content | b64decode | trim }}"
+        # SHA-512 crypt hash of the test-only password "molecule-only".
+        # yamllint disable-line rule:line-length
+        base_admin_password_hash: "$6$moleculesalt$UUcGhu8ui5otSXdg2.iut2Knsyzo7SiPBxqPr8x06k.m973QY2Uu5R3Syb76aQoUWiuxiK8OeMsBr.cyaJYxQ0"
+        # Documentation ranges (RFC 5737, RFC 3849).
+        base_mgmt_cidrs:
+          - 192.0.2.0/24
+          - 2001:db8::/32

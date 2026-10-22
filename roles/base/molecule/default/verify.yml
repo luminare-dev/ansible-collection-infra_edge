@@ -1,0 +1,331 @@
+# Checks of the converged instance. Commands only read state, except the firewall drop-in checks,
+# which add a temporary drop-in file (a valid one, then a broken one) and remove it again.
+- name: Verify
+  hosts: all
+  gather_facts: true
+  vars:
+    ssh_test_options: >-
+      -i /root/molecule-key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p 22
+  tasks:
+    # Users and sudo
+    - name: Read the groups of the users
+      ansible.builtin.command: id -nG {{ item }}
+      register: base_test_user_groups
+      changed_when: false
+      loop: [admin, ansible, root, outsider]
+
+    - name: Check the SSH group (both users and root from prepare.yml, not the outsider) and sudo
+      ansible.builtin.assert:
+        that:
+          - "'sshusers' in base_test_user_groups.results[0].stdout.split()"
+          - "'sudo' in base_test_user_groups.results[0].stdout.split()"
+          - "'sshusers' in base_test_user_groups.results[1].stdout.split()"
+          - "'sudo' not in base_test_user_groups.results[1].stdout.split()"
+          - "'sshusers' in base_test_user_groups.results[2].stdout.split()"
+          - "'sshusers' not in base_test_user_groups.results[3].stdout.split()"
+
+    - name: Read the sudo rules of the users
+      ansible.builtin.command: sudo -l -U {{ item }}
+      register: base_test_sudo_rules
+      changed_when: false
+      loop: [admin, ansible]
+
+    - name: Check that admin needs its password and the automation user does not
+      ansible.builtin.assert:
+        that:
+          - "'(ALL : ALL) ALL' in base_test_sudo_rules.results[0].stdout"
+          - "'NOPASSWD' not in base_test_sudo_rules.results[0].stdout"
+          - "'(ALL : ALL) NOPASSWD: ALL' in base_test_sudo_rules.results[1].stdout"
+
+    - name: Check the sudoers files
+      ansible.builtin.command: visudo -c
+      changed_when: false
+
+    - name: Read the admin password field
+      ansible.builtin.command: getent shadow admin
+      register: base_test_admin_shadow
+      changed_when: false
+      no_log: true
+
+    - name: Check that the admin password is the SHA-512 hash from converge.yml
+      ansible.builtin.assert:
+        that:
+          - base_test_admin_shadow.stdout.split(':')[1].startswith('$6$moleculesalt$')
+      no_log: true
+
+    - name: Read the test public key
+      ansible.builtin.slurp:
+        src: /root/molecule-key.pub
+      register: base_test_key
+
+    - name: Read the authorized keys of the users
+      ansible.builtin.slurp:
+        src: /home/{{ item }}/.ssh/authorized_keys
+      register: base_test_authorized
+      loop: [admin, ansible]
+
+    - name: Check that each user has exactly the configured key
+      ansible.builtin.assert:
+        that:
+          - (item.content | b64decode).strip() == (base_test_key.content | b64decode).strip()
+      loop: "{{ base_test_authorized.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # SSH server
+    - name: Check the SSH server configuration
+      ansible.builtin.command: sshd -t
+      changed_when: false
+
+    - name: Read the effective SSH server configuration
+      ansible.builtin.command: sshd -T
+      register: base_test_sshd_effective
+      changed_when: false
+
+    - name: Check key-only login, no root login, AllowGroups and MaxAuthTries
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in base_test_sshd_effective.stdout_lines"
+          - "'passwordauthentication no' in base_test_sshd_effective.stdout_lines"
+          - "'kbdinteractiveauthentication no' in base_test_sshd_effective.stdout_lines"
+          - "'pubkeyauthentication yes' in base_test_sshd_effective.stdout_lines"
+          - "'authenticationmethods publickey' in base_test_sshd_effective.stdout_lines"
+          - "'allowgroups sshusers' in base_test_sshd_effective.stdout_lines"
+          - "'maxauthtries 3' in base_test_sshd_effective.stdout_lines"
+          - "'port 22' in base_test_sshd_effective.stdout_lines"
+          - "'listenaddress 0.0.0.0:22' in base_test_sshd_effective.stdout_lines"
+          - "'listenaddress [::]:22' in base_test_sshd_effective.stdout_lines"
+
+    - name: Read the state of the SSH service and socket
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      register: base_test_ssh_units
+      loop: [ssh.service, ssh.socket]
+
+    - name: Check that the SSH service runs and socket activation is off
+      ansible.builtin.assert:
+        that:
+          - base_test_ssh_units.results[0].status.ActiveState == 'active'
+          - base_test_ssh_units.results[0].status.UnitFileState == 'enabled'
+          - base_test_ssh_units.results[1].status.UnitFileState == 'masked'
+
+    - name: Log in with the key as the automation user and as admin
+      ansible.builtin.command: ssh {{ ssh_test_options }} {{ item }}@127.0.0.1 id -un
+      register: base_test_key_login
+      changed_when: false
+      failed_when: base_test_key_login.rc != 0 or base_test_key_login.stdout != item
+      loop: [ansible, admin]
+
+    # Root is in the SSH group (prepare.yml), so only PermitRootLogin refuses it; the outsider
+    # has a valid key but is not in the group, so only AllowGroups refuses it.
+    - name: Try the same key as root and as a user outside the SSH group
+      ansible.builtin.command: ssh {{ ssh_test_options }} {{ item }}@127.0.0.1 id -un
+      register: base_test_refused_login
+      changed_when: false
+      failed_when: >-
+        base_test_refused_login.rc != 255 or 'Permission denied' not in base_test_refused_login.stderr
+      loop: [root, outsider]
+
+    - name: Try a password login as admin
+      ansible.builtin.command: >-
+        ssh -o BatchMode=yes -o PubkeyAuthentication=no
+        -o PreferredAuthentications=password,keyboard-interactive -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 admin@127.0.0.1 true
+      register: base_test_password_login
+      changed_when: false
+      failed_when: >-
+        base_test_password_login.rc != 255
+        or 'Permission denied (publickey)' not in base_test_password_login.stderr
+
+    # Firewall
+    - name: Read the nftables ruleset file
+      ansible.builtin.slurp:
+        src: /etc/nftables.conf
+      register: base_test_nftables_conf
+
+    - name: Check the ruleset (default drop, DHCPv6 replies, SSH from management, include as the last line)
+      vars:
+        conf_lines: "{{ (base_test_nftables_conf.content | b64decode).splitlines() | map('trim') | select | list }}"
+      ansible.builtin.assert:
+        that:
+          - conf_lines[-1] == 'include "/etc/nftables.d/*.nft"'
+          - "'flush ruleset' in conf_lines"
+          - "'type filter hook input priority filter; policy drop;' in conf_lines"
+          - "'type filter hook forward priority filter; policy drop;' in conf_lines"
+          - "'type filter hook output priority filter; policy accept;' in conf_lines"
+          - >-
+            'ip6 saddr fe80::/10 udp dport 546 accept comment "dhcpv6 client"' in conf_lines
+          - >-
+            'ip saddr { 192.0.2.0/24 } tcp dport 22 accept comment "ssh from management"' in conf_lines
+          - >-
+            'ip6 saddr { 2001:db8::/32 } tcp dport 22 accept comment "ssh from management"' in conf_lines
+          - conf_lines | select('search', 'dport 22') | list | length == 2
+
+    - name: Check the ruleset with nft (parsed, not loaded)
+      ansible.builtin.command: nft -c -f /etc/nftables.conf
+      changed_when: false
+
+    - name: Add a drop-in like another role would
+      ansible.builtin.copy:
+        content: |
+          add rule inet filter input ip saddr 198.51.100.0/24 tcp dport 3306 accept comment "verify"
+        dest: /etc/nftables.d/99-molecule-verify.nft
+        mode: "0644"
+
+    - name: Check the ruleset together with the drop-in
+      ansible.builtin.command: nft -c -f /etc/nftables.conf
+      changed_when: false
+
+    - name: Replace it with a broken drop-in
+      ansible.builtin.copy:
+        content: |
+          add rule inet filter input tcp dport accept
+        dest: /etc/nftables.d/99-molecule-verify.nft
+        mode: "0644"
+
+    - name: Check that nft reads the drop-in directory (the broken drop-in fails the check)
+      ansible.builtin.command: nft -c -f /etc/nftables.conf
+      register: base_test_broken_dropin
+      changed_when: false
+      failed_when: base_test_broken_dropin.rc == 0
+
+    - name: Remove the drop-in again
+      ansible.builtin.file:
+        path: /etc/nftables.d/99-molecule-verify.nft
+        state: absent
+
+    - name: Read the package states
+      ansible.builtin.package_facts:
+
+    # prepare.yml installs ufw, so the converge has to remove it.
+    - name: Check the packages
+      ansible.builtin.assert:
+        that:
+          - "'nftables' in ansible_facts.packages"
+          - "'fail2ban' in ansible_facts.packages"
+          - "'unattended-upgrades' in ansible_facts.packages"
+          - "'systemd-timesyncd' in ansible_facts.packages"
+          - "'ufw' not in ansible_facts.packages"
+          - "'qemu-guest-agent' not in ansible_facts.packages"
+
+    # fail2ban
+    - name: Read the fail2ban SSH jail
+      ansible.builtin.slurp:
+        src: /etc/fail2ban/jail.d/sshd.local
+      register: base_test_jail
+
+    - name: Check the jail (journal backend, nftables action, management networks never banned)
+      vars:
+        jail_lines: "{{ (base_test_jail.content | b64decode).splitlines() }}"
+      ansible.builtin.assert:
+        that:
+          - "'backend = systemd' in jail_lines"
+          - "'banaction = nftables-multiport' in jail_lines"
+          - "'ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 2001:db8::/32' in jail_lines"
+          - "'maxretry = 5' in jail_lines"
+
+    - name: Check the fail2ban configuration
+      ansible.builtin.command: fail2ban-client -t
+      changed_when: false
+
+    # Time zone, locale, host name
+    - name: Read the time zone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      register: base_test_timezone
+      changed_when: false
+
+    - name: Read the generated locales
+      ansible.builtin.command: locale -a
+      register: base_test_locales
+      changed_when: false
+
+    - name: Read /etc/default/locale and /etc/hosts
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: base_test_system_files
+      loop:
+        - /etc/default/locale
+        - /etc/hosts
+
+    - name: Check time zone, locale and host name mapping
+      ansible.builtin.assert:
+        that:
+          - base_test_timezone.stdout == 'Europe/Vienna'
+          - "'en_US.utf8' in base_test_locales.stdout_lines"
+          - "'LANG=en_US.UTF-8' in (base_test_system_files.results[0].content | b64decode).splitlines()"
+          - ('127.0.1.1 ' ~ inventory_hostname) in (base_test_system_files.results[1].content | b64decode).splitlines()
+
+    # The input checks refuse IP addresses and invalid names, which the default (the inventory
+    # name) can be; they run before any change, so no host name is set here.
+    - name: Start with no host name results
+      ansible.builtin.set_fact:
+        base_test_hostname_results: {}
+
+    - name: Run the input checks of the role with valid and invalid host names
+      ansible.builtin.include_tasks: tasks/hostname_check.yml
+      loop:
+        - edge-1
+        - edge-1.example.com
+        - "203.0.113.10"
+        - "2001:db8::10"
+        - edge_1
+        - "-edge"
+        - edge-.example.com
+        - "{{ 'a' * 65 }}"
+      loop_control:
+        loop_var: base_test_hostname
+
+    - name: Check that the valid names pass and that the host name check refuses the six others
+      vars:
+        refused: >-
+          {{ base_test_hostname_results | dict2items
+             | rejectattr('key', 'in', ['edge-1', 'edge-1.example.com']) | map(attribute='value') | list }}
+      ansible.builtin.assert:
+        that:
+          - base_test_hostname_results['edge-1'] == 'accepted'
+          - base_test_hostname_results['edge-1.example.com'] == 'accepted'
+          - refused | length == 6
+          - refused | unique == ['Check that the host name is a valid host name and not an IP address']
+
+    # Unattended upgrades
+    - name: Read the unattended-upgrades settings as apt sees them
+      ansible.builtin.command: apt-config dump Unattended-Upgrade APT::Periodic
+      register: base_test_apt_config
+      changed_when: false
+
+    - name: Check that only the security archive is allowed and the daily run is on
+      vars:
+        origins: >-
+          {{ base_test_apt_config.stdout_lines | select('match', '^Unattended-Upgrade::Origins-Pattern:: ') | list }}
+        expected: >-
+          {{ 'origin=Debian,codename=${distro_codename}-security,label=Debian-Security'
+             if ansible_facts['distribution'] == 'Debian'
+             else 'origin=Ubuntu,archive=${distro_codename}-security,label=Ubuntu' }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            origins == ['Unattended-Upgrade::Origins-Pattern:: "' ~ expected ~ '";']
+          - "'APT::Periodic::Unattended-Upgrade \"1\";' in base_test_apt_config.stdout_lines"
+          - "'APT::Periodic::Update-Package-Lists \"1\";' in base_test_apt_config.stdout_lines"
+          - "'Unattended-Upgrade::Automatic-Reboot \"false\";' in base_test_apt_config.stdout_lines"
+
+    # journald
+    - name: Read the effective journald configuration
+      ansible.builtin.command: systemd-analyze cat-config systemd/journald.conf
+      register: base_test_journald_config
+      changed_when: false
+
+    - name: Read the journal directory
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: base_test_journal_dir
+
+    - name: Check the journal limits (500M, 14 days, on disk)
+      ansible.builtin.assert:
+        that:
+          - "'# /etc/systemd/journald.conf.d/10-retention.conf' in base_test_journald_config.stdout_lines"
+          - "'Storage=persistent' in base_test_journald_config.stdout_lines"
+          - "'SystemMaxUse=500M' in base_test_journald_config.stdout_lines"
+          - "'MaxRetentionSec=14day' in base_test_journald_config.stdout_lines"
+          - base_test_journal_dir.stat.isdir

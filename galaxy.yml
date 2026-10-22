@@ -21,8 +21,13 @@ tags:
   - database
   - debian
   - ubuntu
-# Only community collections that a role really uses go here, each with a version range.
-dependencies: {}
+# Only community collections that a role really uses go here, each with a version range (the
+# tested versions: ansible.posix and community.general from the "ansible" package in
+# requirements-test.txt, devsec.hardening from Galaxy). luminare collections are never listed.
+dependencies:
+  ansible.posix: ">=2.2.0,<3.0.0"
+  community.general: ">=13.0.0,<14.0.0"
+  devsec.hardening: ">=11.0.0,<12.0.0"
 repository: https://github.com/luminare-dev/ansible-collection-infra_edge
 documentation: https://github.com/luminare-dev/ansible-collection-infra_edge/tree/main/docs
 homepage: https://luminare.tech/open-source/ansible-collection-infra_edge/

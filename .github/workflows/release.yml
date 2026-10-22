@@ -27,7 +27,7 @@ jobs:
         && export PATH="$RUNNER_TEMP/venv/bin:$PATH"
         && pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
         && python3 -m unittest discover -s tests -v
-        && ansible-lint
+        && ansible-lint --offline
     permissions:
       contents: write        # release commit, tag, draft release, attached files
       pull-requests: write   # the release pull request

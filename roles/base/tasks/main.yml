@@ -1,0 +1,46 @@
+# luminare.infra_edge.base: the order matters. The checks run before any change, and the users
+# exist and are members of the SSH group before the SSH server only admits that group.
+
+- name: Check the inputs before changing anything
+  ansible.builtin.import_tasks: assert.yml
+  tags: [base, always]
+
+- name: Install the base packages
+  ansible.builtin.import_tasks: packages.yml
+  tags: [base, packages]
+
+- name: Set the time zone, locales and host name
+  ansible.builtin.import_tasks: system.yml
+  tags: [base, system]
+
+- name: Configure unattended security upgrades
+  ansible.builtin.import_tasks: unattended_upgrades.yml
+  tags: [base, unattended_upgrades]
+
+- name: Create the admin and automation users
+  ansible.builtin.import_tasks: users.yml
+  tags: [base, users]
+
+- name: Harden the SSH server
+  ansible.builtin.import_tasks: ssh.yml
+  when: base_ssh_hardening_enabled
+  tags: [base, ssh]
+
+- name: Write the nftables firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: base_firewall_enabled
+  tags: [base, firewall]
+
+- name: Configure fail2ban for SSH
+  ansible.builtin.import_tasks: fail2ban.yml
+  when: base_fail2ban_enabled
+  tags: [base, fail2ban]
+
+- name: Limit the systemd journal
+  ansible.builtin.import_tasks: journald.yml
+  tags: [base, journald]
+
+- name: Apply devsec.hardening.os_hardening (opt-in)
+  ansible.builtin.import_tasks: os_hardening.yml
+  when: base_os_hardening_enabled
+  tags: [base, os_hardening]

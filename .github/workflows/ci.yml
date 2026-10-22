@@ -25,10 +25,12 @@ jobs:
     with:
       # After the template checks: the unit tests (including the collection build test) and
       # ansible-lint (production profile, see .ansible-lint) with the hash-pinned test tools.
+      # --offline: ansible-lint does not install the galaxy.yml dependencies from Ansible Galaxy,
+      # so this required check does not depend on Galaxy (docs/adr/0008).
       test-command: >-
         pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
         && python3 -m unittest discover -s tests -v
-        && ansible-lint
+        && ansible-lint --offline
     permissions:
       contents: read
 

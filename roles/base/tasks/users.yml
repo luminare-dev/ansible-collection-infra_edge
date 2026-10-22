@@ -1,0 +1,59 @@
+# Both users join the SSH group here, before the SSH server is limited to that group.
+
+- name: Create the SSH group
+  ansible.builtin.group:
+    name: "{{ base_ssh_group }}"
+    state: present
+
+- name: Create the admin user (password sudo through the sudo group)
+  ansible.builtin.user:
+    name: "{{ base_admin_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups:
+      - "{{ base_ssh_group }}"
+      - sudo
+    append: true
+    state: present
+
+- name: Set the admin password from its hash
+  ansible.builtin.user:
+    name: "{{ base_admin_user }}"
+    password: "{{ base_admin_password_hash }}"
+    update_password: always
+  when: base_admin_password_hash | length > 0
+  no_log: true
+  diff: false
+
+- name: Create the automation user
+  ansible.builtin.user:
+    name: "{{ base_automation_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups:
+      - "{{ base_ssh_group }}"
+    append: true
+    state: present
+
+- name: Install the SSH keys (the lists replace all other keys of the users)
+  ansible.posix.authorized_key:
+    user: "{{ item.user }}"
+    key: "{{ item.public_keys | join('\n') }}"
+    exclusive: true
+    state: present
+  loop:
+    - user: "{{ base_admin_user }}"
+      public_keys: "{{ base_admin_ssh_keys }}"
+    - user: "{{ base_automation_user }}"
+      public_keys: "{{ base_automation_ssh_keys }}"
+  loop_control:
+    label: "{{ item.user }}"
+
+- name: Let the automation user use sudo
+  ansible.builtin.template:
+    src: sudoers-automation.j2
+    dest: /etc/sudoers.d/90-base-automation
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
