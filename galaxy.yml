@@ -3,7 +3,7 @@
 # annotated line) and must stay equal to version.txt; tests/test_collection.py checks both.
 namespace: luminare
 name: infra_edge
-version: 0.0.0 # x-release-please-version
+version: 0.1.0 # x-release-please-version
 readme: README.md
 authors:
   - Luminare Development <oss@luminare.tech>
