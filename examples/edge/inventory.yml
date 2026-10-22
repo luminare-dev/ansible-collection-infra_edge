@@ -1,0 +1,17 @@
+# Example inventory for the playbook luminare.infra_edge.edge: one edge host in the group "edge".
+# Copy the folder examples/edge/, then replace the host name and its addresses here and the
+# values in group_vars/edge/main.yml. Names use example.com and addresses the documentation
+# ranges (RFC 5737), so nothing here points to a real host.
+all:
+  children:
+    edge:
+      hosts:
+        edge-01.example.com:
+          # The public address the control node reaches over SSH.
+          ansible_host: 203.0.113.10
+          # The first run logs in as root (or as the default user of the image). The base role
+          # then refuses SSH logins as root, so later runs use its automation user "ansible".
+          ansible_user: root
+          # The address on the private network 192.0.2.0/24 where the application host
+          # 192.0.2.13 (group_vars/edge/main.yml) reaches the database.
+          mariadb_bind_address: 192.0.2.10

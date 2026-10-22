@@ -1,8 +1,31 @@
 # Upgrading
 
-Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0 a minor
-release may contain breaking changes; they are listed under "BREAKING CHANGES" in the
-[changelog](../CHANGELOG.md). After 1.0.0, breaking changes come only in a major release.
+Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), with the rules for
+versions before 1.0.0 below. Each release is a git tag `vX.Y.Z` with a GitHub release; the
+[changelog](../CHANGELOG.md) lists every change, breaking ones under "BREAKING CHANGES".
+
+## Version policy
+
+| Release | Before 1.0.0 (now) | From 1.0.0 |
+|---|---|---|
+| Patch (`0.1.0` to `0.1.1`) | Fixes only, never a breaking change | Fixes only |
+| Minor (`0.1.x` to `0.2.0`) | New roles, variables or features, and it may contain breaking changes | New roles, variables or features, never a breaking change |
+| Major (`1.x` to `2.0.0`) | | Breaking changes |
+
+A change is breaking when an unchanged inventory would fail or would set up a host differently
+after the upgrade, for example:
+
+- a variable, a role or the playbook is renamed or removed, or a variable gets another type;
+- a default changes what a host gets: a port, an address, a path, a user, a package or a
+  schedule;
+- a distribution is dropped, or `requires_ansible` rises to a newer ansible-core;
+- a file that the roles share or leave behind moves, for example the drop-in numbers in
+  `/etc/nftables.d` or the dump folder.
+
+A breaking change is named in the changelog with the steps to adapt the inventory, and gets a
+section under [Version notes](#version-notes). Fixes go into the latest minor release only, so
+upgrade within 0.x when a new minor release comes out, and pin the tag in `requirements.yml` so
+that a new release never arrives unplanned.
 
 ## General steps
 
@@ -11,9 +34,24 @@ release may contain breaking changes; they are listed under "BREAKING CHANGES" i
 3. Install the new release (see [Installation](install.md)) and verify its checksum. With a
    `requirements.yml`, change the `version:` tag and run
    `ansible-galaxy collection install -r requirements.yml --force`.
-4. Run your playbook with `--check --diff` against one host first, then for real, and run the
+4. Run your playbook with `--limit` against one host first, then against all of them, and run the
    check from [Installation](install.md) again.
 
 ## Version notes
 
-A release that needs manual steps gets a section here, named after its version.
+### 0.1.0
+
+The first release; there is nothing to migrate from. On a host that was set up before, by hand or
+with other roles, the first run replaces some of that setup:
+
+- `base` removes ufw and writes `/etc/nftables.conf`, whose `flush ruleset` also removes rules
+  that other software added (keep `base_firewall_enabled: false` on hosts that run Docker). SSH
+  then accepts only keys of users in the `sshusers` group, and never root; list every key that
+  still needs access in `base_admin_ssh_keys` or `base_automation_ssh_keys` first.
+- `cloudflared` replaces a connector set up with `cloudflared service install`, removes its
+  self-update units and installs the pinned version, also when a newer one was installed.
+- `nginx` replaces `/etc/nginx/nginx.conf` and removes the package's default site; files in
+  `/etc/nginx/conf.d/` stay and are checked with the rest by `nginx -t`.
+- `mariadb` logs in as root over the socket without a password, so a root password set by hand
+  stops the role (see [Troubleshooting](troubleshooting.md)). It removes anonymous accounts, the
+  `test` database and root accounts for other hosts, and never drops another database or account.

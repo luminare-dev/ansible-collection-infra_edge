@@ -27,14 +27,19 @@ SLUG = "ansible-collection-infra_edge"
 DESCRIPTION = "Ansible collection for edge hosts: base hardening, an outbound tunnel, a web server and a database"
 INSTANCE_PREFIX = "ie-"
 PLATFORM_NAME_RE = re.compile(r"ie-\$\{MOLECULE_ROLE:-role\}-([a-z0-9]+)")
+EDGE_SCENARIO = "extensions/molecule/edge"
+EDGE_ROLES = ["luminare.infra_edge.base", "luminare.infra_edge.cloudflared", "luminare.infra_edge.nginx",
+              "luminare.infra_edge.mariadb"]
 DIGEST_FROM_RE = re.compile(r"^FROM (debian:trixie|ubuntu:24\.04)@sha256:[0-9a-f]{64}$", re.MULTILINE)
 
 # Repository files that must never reach the installed collection, and files that must.
 NOT_IN_TARBALL = (".github/", "docs/brand/", "scripts/", ".config/", "requirements-", "dist/", "version.txt",
                   "release-please-config.json", ".ansible-lint", ".forbidden-words-allow", ".gitleaks.toml")
 NOT_IN_TARBALL_ANYWHERE = re.compile(
-    r"(^|/)\.ansible(/|$)|^roles/[^/]+/molecule(/|$)|^tests(/|$)|(^|/)__pycache__(/|$)|\.tar\.gz$")
-IN_TARBALL = ("README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "meta/runtime.yml", "roles/README.md")
+    r"(^|/)\.ansible(/|$)|^roles/[^/]+/molecule(/|$)|^extensions(/|$)|^tests(/|$)|(^|/)__pycache__(/|$)"
+    r"|\.tar\.gz$")
+IN_TARBALL = ("README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "meta/runtime.yml", "roles/README.md",
+              "playbooks/edge.yml", "examples/edge/inventory.yml", "examples/edge/group_vars/edge/main.yml")
 
 
 def load_yaml(rel: str):
@@ -79,7 +84,8 @@ class GalaxyMetadataTest(unittest.TestCase):
     def test_build_ignore_covers_repository_tooling(self):
         ignored = set(self.galaxy["build_ignore"])
         for pattern in ("docs/brand", "scripts", ".github", "dist", "tests", "*.tar.gz",
-                        ".forbidden-words-allow", "requirements-*.txt", ".ansible", "roles/*/.ansible"):
+                        ".forbidden-words-allow", "requirements-*.txt", ".ansible", "roles/*/.ansible",
+                        "roles/*/molecule", "extensions"):
             self.assertIn(pattern, ignored)
 
     def test_requires_ansible(self):
@@ -152,6 +158,87 @@ class MoleculeConfigTest(unittest.TestCase):
         self.assertEqual(step["env"]["MOLECULE_ROLE"], "${{ matrix.role }}")
         self.assertEqual(step["env"]["PLATFORM"], "${{ matrix.platform }}")
         self.assertEqual(step["run"].strip(), 'molecule test --platform-name "ie-${MOLECULE_ROLE}-${PLATFORM}"')
+
+    def config_suffixes(self):
+        return [PLATFORM_NAME_RE.fullmatch(p["name"]).group(1)
+                for p in load_yaml(".config/molecule/config.yml")["platforms"]]
+
+    def test_edge_scenario_uses_the_shared_platforms(self):
+        """The edge scenario repeats the platforms of config.yml; only name, path and groups differ."""
+        shared = load_yaml(".config/molecule/config.yml")["platforms"]
+        scenario = load_yaml(f"{EDGE_SCENARIO}/molecule.yml")
+        platforms = scenario["platforms"]
+        self.assertEqual([p["name"] for p in platforms], [f"ie-edge-{s}" for s in self.config_suffixes()])
+        own_keys = {"name", "dockerfile", "groups"}
+        for edge, base in zip(platforms, shared, strict=True):
+            self.assertEqual({k: v for k, v in edge.items() if k not in own_keys},
+                             {k: v for k, v in base.items() if k not in own_keys}, edge["name"])
+            self.assertEqual((ROOT / EDGE_SCENARIO / edge["dockerfile"]).resolve(),
+                             ROOT / ".config" / "molecule" / "Dockerfile.j2")
+            self.assertEqual(edge["groups"], ["edge"] + base["groups"])
+        self.assertEqual(scenario["scenario"]["name"], "edge")
+
+    def test_edge_scenario_reads_the_example_inventory(self):
+        scenario = load_yaml(f"{EDGE_SCENARIO}/molecule.yml")
+        link = scenario["provisioner"]["inventory"]["links"]["group_vars"]
+        self.assertEqual((ROOT / EDGE_SCENARIO / link).resolve(), ROOT / "examples" / "edge" / "group_vars")
+        converge = load_yaml(f"{EDGE_SCENARIO}/converge.yml")
+        self.assertEqual(converge[-1], {"name": "Apply the playbook luminare.infra_edge.edge",
+                                        "ansible.builtin.import_playbook": "luminare.infra_edge.edge"})
+
+    def test_ci_runs_the_edge_scenario_per_platform(self):
+        jobs = load_yaml(".github/workflows/ci.yml")["jobs"]
+        job = jobs["molecule-edge"]
+        self.assertEqual(job["strategy"]["matrix"], {"platform": self.config_suffixes()})
+        self.assertEqual(job["name"], "molecule-edge (${{ matrix.platform }})")
+        step = next(s for s in job["steps"] if "molecule test" in s.get("run", ""))
+        self.assertNotIn("working-directory", step)
+        self.assertEqual(step["env"]["PLATFORM"], "${{ matrix.platform }}")
+        self.assertEqual(step["run"].strip(), 'molecule test --scenario-name edge --platform-name "ie-edge-${PLATFORM}"')
+        self.assertIn("molecule-edge", jobs["molecule"]["needs"])
+        self.assertIn("needs.molecule-edge.result", jobs["molecule"]["steps"][0]["env"]["EDGE"])
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed (pip install -r requirements-test.txt)")
+class EdgePlaybookTest(unittest.TestCase):
+    """playbooks/edge.yml composes the four roles; examples/edge/ is its complete example inventory."""
+
+    def role_options(self):
+        options = {}
+        for spec in sorted(ROOT.glob("roles/*/meta/argument_specs.yml")):
+            options.update(yaml.safe_load(spec.read_text(encoding="utf-8"))["argument_specs"]["main"]["options"])
+        return options
+
+    def test_play_runs_the_four_roles_in_order(self):
+        plays = load_yaml("playbooks/edge.yml")
+        self.assertEqual(len(plays), 1)
+        play = plays[0]
+        self.assertEqual(play["hosts"], "{{ edge_hosts | default('edge') }}")
+        self.assertIs(play["become"], True)
+        self.assertEqual([r["role"] for r in play["roles"]], EDGE_ROLES)
+        self.assertNotIn("vars", play, "values belong in the inventory, not in the playbook")
+
+    def test_example_inventory_has_one_edge_host(self):
+        inventory = load_yaml("examples/edge/inventory.yml")
+        hosts = inventory["all"]["children"]["edge"]["hosts"]
+        self.assertEqual(list(hosts), ["edge-01.example.com"])
+        for name in hosts["edge-01.example.com"]:
+            self.assertTrue(name.startswith("ansible_") or name in self.role_options(), name)
+
+    def test_example_group_vars_are_role_variables(self):
+        """A typo in the example would silently fall back to a default; every key must be a role option."""
+        group_vars = load_yaml("examples/edge/group_vars/edge/main.yml")
+        options = self.role_options()
+        for name in group_vars:
+            self.assertIn(name, options, f"{name} is not a variable of the four roles")
+
+    def test_example_keeps_secrets_out(self):
+        """Secrets of the example come from the vault file or the environment, never as values."""
+        group_vars = load_yaml("examples/edge/group_vars/edge/main.yml")
+        self.assertNotIn("cloudflared_token", group_vars, "the token comes from TUNNEL_TOKEN")
+        self.assertEqual(group_vars["base_admin_password_hash"], "{{ vault_base_admin_password_hash }}")
+        for item in group_vars["mariadb_databases"]:
+            self.assertRegex(item["password"], r"^\{\{ vault_[a-z_]+ \}\}$")
 
 
 class RoleLayoutTest(unittest.TestCase):

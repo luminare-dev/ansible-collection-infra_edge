@@ -7,6 +7,22 @@ when the role starts. Each role gets a section on this page with a table of its 
 type, default, description), generated from that file with `python3 tests/role_docs.py --write`;
 a unit test fails when a table here or in a role README is out of date.
 
+## Playbook luminare.infra_edge.edge
+
+[`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the four roles below in this order:
+`base`, `cloudflared`, `nginx`, `mariadb`. It has no variables of its own except the host pattern,
+and passes nothing to the roles: every value comes from the inventory, as role variables.
+[`examples/edge/`](../examples/edge/) is a complete inventory for one host (tested by the Molecule
+scenario `edge`); a unit test fails when it sets a variable that none of the four roles has.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `edge_hosts` | str | `edge` | Host pattern of the play: an inventory group, a host or any pattern, for example `-e edge_hosts=web`. `--limit` narrows it further. |
+
+Each role's tasks carry the role name as a tag, so `--skip-tags mariadb` runs the playbook
+without the database role. With `--tags`, the input checks of all four roles still run (tag
+`always`), so their required values (SSH keys, tunnel token, database passwords) must be set.
+
 ## base
 
 [`luminare.infra_edge.base`](../roles/base/README.md) hardens the host: time zone and locales,

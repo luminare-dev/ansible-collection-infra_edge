@@ -1,0 +1,31 @@
+# Test values of the Molecule scenario "edge" (prepare.yml, converge.yml, verify.yml). The example
+# inventory leaves them to the operator (SSH keys, the vault file, the tunnel token) or sets them
+# per host in examples/edge/inventory.yml, which Molecule does not read. Synthetic values only.
+
+# The test key pair that prepare.yml generates in the instance (no key material in the repository).
+edge_test_key_file: /root/molecule-key
+
+# The private address of the example host (mariadb_bind_address in examples/edge/inventory.yml).
+# prepare.yml gives it to the instance on a veth pair whose other end is in the network namespace
+# "lan", with one address per kind of host outside.
+edge_test_private_address: 192.0.2.10
+edge_test_lan_hosts:
+  # In mariadb_allowed_app_hosts of the example.
+  app: 192.0.2.13
+  # In base_mgmt_cidrs of the example.
+  mgmt: 198.51.100.7
+  # Neither: only the default policy applies to it.
+  other: 192.0.2.66
+
+# What group_vars/edge/vault.yml would hold. The hash is the SHA-512 crypt hash of the test-only
+# password "molecule-only", as in the base scenario.
+# yamllint disable-line rule:line-length
+vault_base_admin_password_hash: "$6$moleculesalt$UUcGhu8ui5otSXdg2.iut2Knsyzo7SiPBxqPr8x06k.m973QY2Uu5R3Syb76aQoUWiuxiK8OeMsBr.cyaJYxQ0"
+vault_edge_app_db_password: molecule-app-only
+vault_edge_app_reader_db_password: molecule-reader-only
+
+# A synthetic token in the format of a tunnel token, base64 of {"a": account tag, "t": tunnel ID,
+# "s": secret}; it belongs to no account and no tunnel (as in the cloudflared scenario).
+edge_test_token: >-
+  {{ {'a': '0' * 32, 't': '00000000-0000-0000-0000-000000000000',
+      's': 'molecule-only-secret' | b64encode} | to_json | b64encode }}

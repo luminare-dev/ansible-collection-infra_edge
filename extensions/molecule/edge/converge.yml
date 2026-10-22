@@ -1,0 +1,38 @@
+# The playbook of the collection as an operator runs it with the example inventory. The first play
+# only provides what the operator would add to the example: the SSH keys, the values of the vault
+# file, the tunnel token, the host's private address from examples/edge/inventory.yml (which
+# Molecule does not read) and a small buffer pool for the container. set_fact values take
+# precedence over the group_vars of the example and stay set for the imported play.
+- name: Provide the values that the example inventory leaves to the operator
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - vars/test.yml
+  tasks:
+    - name: Read the test public key that prepare.yml generated
+      ansible.builtin.slurp:
+        src: "{{ edge_test_key_file }}.pub"
+      register: edge_test_key
+
+    - name: Set the keys, the vault values, the synthetic token and the private address
+      ansible.builtin.set_fact:
+        base_admin_ssh_keys:
+          - "{{ edge_test_key.content | b64decode | trim }}"
+        base_automation_ssh_keys:
+          - "{{ edge_test_key.content | b64decode | trim }}"
+        vault_base_admin_password_hash: "{{ vault_base_admin_password_hash }}"
+        vault_edge_app_db_password: "{{ vault_edge_app_db_password }}"
+        vault_edge_app_reader_db_password: "{{ vault_edge_app_reader_db_password }}"
+        cloudflared_token: "{{ edge_test_token }}"
+        # An edge address on the loopback interface: in the network namespace of prepare.yml,
+        # cloudflared keeps retrying it instead of looking up Cloudflare's edge and exiting.
+        cloudflared_extra_args:
+          - --edge
+          - 127.0.0.1:7844
+        mariadb_bind_address: "{{ edge_test_private_address }}"
+        # The default is a quarter of the memory that the container sees (the whole test machine).
+        mariadb_innodb_buffer_pool_size: 128M
+      no_log: true
+
+- name: Apply the playbook luminare.infra_edge.edge
+  ansible.builtin.import_playbook: luminare.infra_edge.edge

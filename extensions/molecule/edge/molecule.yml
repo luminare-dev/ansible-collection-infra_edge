@@ -1,0 +1,66 @@
+# Molecule scenario "edge": the playbook luminare.infra_edge.edge (playbooks/edge.yml) with the
+# values of the example inventory (examples/edge/group_vars/, linked below), so the four roles
+# run together as one edge host would get them. Run it from the repository root, where Molecule
+# finds the collection's scenarios in extensions/molecule/:
+#   molecule test --scenario-name edge                                    # both platforms
+#   molecule test --scenario-name edge --platform-name ie-edge-debian13   # one, as in CI
+# The driver, the provisioner settings and the test sequence come from .config/molecule/config.yml.
+# Only the platforms are repeated here: the same containers as the role scenarios, named
+# ie-edge-<platform>, in the inventory group "edge" of the playbook, with the Dockerfile path
+# seen from this folder (tests/test_collection.py keeps both lists equal).
+#
+# prepare.yml adds what the example inventory assumes around the host: the private network
+# 192.0.2.0/24 with the application host and a network namespace "lan" for the hosts outside,
+# a test application behind the nginx site, and a drop-in that keeps the tunnel connector away
+# from every network. converge.yml sets the values that the operator would provide (SSH keys,
+# vault values, the tunnel token) and imports the playbook. verify.yml checks the roles together:
+# the composed firewall from the other hosts, the listeners, a request through nginx to the
+# application and its database, and the connector.
+dependency:
+  name: galaxy
+  options:
+    # devsec.hardening for the base role, as in roles/base/molecule/default/requirements.yml.
+    requirements-file: ${MOLECULE_SCENARIO_DIRECTORY}/requirements.yml
+platforms:
+  - name: ie-edge-debian13
+    image: ie-molecule-debian13
+    dockerfile: ../../../.config/molecule/Dockerfile.j2
+    pre_build_image: false
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+    groups:
+      - edge
+      - debian
+  - name: ie-edge-ubuntu2404
+    image: ie-molecule-ubuntu2404
+    dockerfile: ../../../.config/molecule/Dockerfile.j2
+    pre_build_image: false
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+    groups:
+      - edge
+      - ubuntu
+provisioner:
+  name: ansible
+  options:
+    # Unlike the role scenarios, the tasks tagged molecule-notest run here: the base role loads its
+    # firewall into the instance's own network namespace and starts fail2ban, and the drop-in
+    # handlers of the other roles restart both, as on a real host.
+    skip-tags: notest
+  inventory:
+    links:
+      group_vars: ../../../examples/edge/group_vars/
+scenario:
+  name: edge

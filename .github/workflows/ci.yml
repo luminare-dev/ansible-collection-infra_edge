@@ -1,5 +1,6 @@
 # Caller: lint, tests and the full-history secret scan on every pull request and push to main;
-# the Molecule scenarios of the roles on pull requests, on demand and once a week.
+# the Molecule scenarios of the roles and of the edge playbook on pull requests, on demand and
+# once a week.
 # Required checks for the main ruleset: "ci / lint-test" and "secrets / gitleaks".
 name: ci
 
@@ -26,10 +27,13 @@ jobs:
       # After the template checks: the unit tests (including the collection build test) and
       # ansible-lint (production profile, see .ansible-lint) with the hash-pinned test tools.
       # --offline: ansible-lint does not install the galaxy.yml dependencies from Ansible Galaxy,
-      # so this required check does not depend on Galaxy (docs/adr/0008).
+      # so this required check does not depend on Galaxy (docs/adr/0008). It does not install
+      # this collection either, so the checkout is installed first without its dependencies:
+      # the syntax check resolves luminare.infra_edge.* in the edge playbook and its scenario.
       test-command: >-
         pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
         && python3 -m unittest discover -s tests -v
+        && ansible-galaxy collection install --no-deps --force .
         && ansible-lint --offline
     permissions:
       contents: read
@@ -104,11 +108,46 @@ jobs:
           ANSIBLE_FORCE_COLOR: "1"
         run: molecule test --platform-name "ie-${MOLECULE_ROLE}-${PLATFORM}"
 
+  # The playbook luminare.infra_edge.edge with the example inventory: the collection scenario
+  # extensions/molecule/edge, run from the repository root, one job per platform (instance
+  # ie-edge-<platform>; tests/test_collection.py keeps the platforms equal to config.yml).
+  molecule-edge:
+    name: molecule-edge (${{ matrix.platform }})
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [debian13, ubuntu2404]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the test tools (hash-pinned)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: molecule test of the edge playbook on one platform
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PY_COLORS: "1"
+          ANSIBLE_FORCE_COLOR: "1"
+        run: molecule test --scenario-name edge --platform-name "ie-edge-${PLATFORM}"
+
   molecule:
-    # One stable check name for the matrix: fails when the plan or any role x platform job failed
-    # or was cancelled; passes when every job passed or when no role has a scenario.
+    # One stable check name for all Molecule jobs: fails when the plan, any role x platform job or
+    # any edge job failed or was cancelled; passes when every job passed (the role jobs may be
+    # skipped only when no role has a scenario).
     name: molecule
-    needs: [plan, molecule-scenario]
+    needs: [plan, molecule-scenario, molecule-edge]
     if: ${{ always() && github.event_name != 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -118,12 +157,17 @@ jobs:
         env:
           PLAN: ${{ needs.plan.result }}
           SCENARIOS: ${{ needs.molecule-scenario.result }}
+          EDGE: ${{ needs.molecule-edge.result }}
           ROLES: ${{ needs.plan.outputs.roles }}
         run: |
           set -euo pipefail
-          echo "plan: ${PLAN}; scenarios: ${SCENARIOS}; roles: ${ROLES:-none}"
+          echo "plan: ${PLAN}; scenarios: ${SCENARIOS}; edge: ${EDGE}; roles: ${ROLES:-none}"
           if [ "$PLAN" != "success" ]; then
             echo "::error::the Molecule plan job did not succeed (${PLAN})"
+            exit 1
+          fi
+          if [ "$EDGE" != "success" ]; then
+            echo "::error::the edge playbook scenario did not pass (${EDGE})"
             exit 1
           fi
           case "$SCENARIOS" in
