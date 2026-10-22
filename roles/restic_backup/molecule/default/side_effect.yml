@@ -1,0 +1,74 @@
+# 1. Applies the role with a wrong password for the existing repository: the role must stop
+#    before it writes the settings, so the settings files, the repository's configuration and
+#    its keys stay as they are (no new repository over the old one).
+# 2. Applies the role with the pinned upstream release (restic_backup_install_method binary) and
+#    the timers switched off; verify_binary.yml checks the result against the same repository.
+- name: Side effect
+  hosts: all
+  gather_facts: true
+  vars:
+    restic_backup_test_guarded:
+      - /etc/restic/env
+      - /etc/restic/password
+      - /srv/restic-repo/config
+  tasks:
+    - name: Read the settings and the repository before the wrong password
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: restic_backup_test_guard_before
+      loop: "{{ restic_backup_test_guarded }}"
+
+    - name: Read the keys of the repository before the wrong password
+      ansible.builtin.find:
+        paths: /srv/restic-repo/keys
+      register: restic_backup_test_keys_before
+
+    - name: Apply the role with a wrong password (it must stop)
+      block:
+        - name: Apply luminare.infra_edge.restic_backup with a wrong password
+          ansible.builtin.include_role:
+            name: luminare.infra_edge.restic_backup
+          vars:
+            restic_backup_password: molecule-wrong-password
+
+        - name: Record that the role did not stop
+          ansible.builtin.set_fact:
+            restic_backup_test_wrong_password_passed: true
+      rescue:
+        - name: Record the message of the role
+          ansible.builtin.set_fact:
+            restic_backup_test_wrong_password_message: "{{ ansible_failed_result.msg }}"
+
+    - name: Read the settings and the repository after the wrong password
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: restic_backup_test_guard_after
+      loop: "{{ restic_backup_test_guarded }}"
+
+    - name: Read the keys of the repository after the wrong password
+      ansible.builtin.find:
+        paths: /srv/restic-repo/keys
+      register: restic_backup_test_keys_after
+
+    - name: Check that the role stopped with its message and changed nothing
+      ansible.builtin.assert:
+        that:
+          - restic_backup_test_wrong_password_passed is not defined
+          - >-
+            restic_backup_test_wrong_password_message
+            is search('The repository exists, but restic_backup_password does not open it')
+          - restic_backup_test_wrong_password_message is search('The settings on the host were not changed')
+          - >-
+            restic_backup_test_guard_before.results | map(attribute='stat.checksum') | list
+            == restic_backup_test_guard_after.results | map(attribute='stat.checksum') | list
+          - >-
+            restic_backup_test_keys_before.files | map(attribute='path') | list
+            == restic_backup_test_keys_after.files | map(attribute='path') | list
+          - restic_backup_test_keys_after.files | length == 1
+
+    - name: Apply luminare.infra_edge.restic_backup with the upstream release and the timers off
+      ansible.builtin.include_role:
+        name: luminare.infra_edge.restic_backup
+      vars:
+        restic_backup_install_method: binary
+        restic_backup_timers_enabled: false

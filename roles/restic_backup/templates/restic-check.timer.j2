@@ -1,0 +1,12 @@
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+# Starts restic-check.service at {{ restic_backup_check_oncalendar }} (systemd calendar, local time of
+# the host). Persistent: a run missed while the host was off follows at the next boot.
+[Unit]
+Description=Monthly check of the restic repository of this host
+
+[Timer]
+OnCalendar={{ restic_backup_check_oncalendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

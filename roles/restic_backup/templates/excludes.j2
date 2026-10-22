@@ -1,0 +1,6 @@
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+# Exclude patterns of the backup (restic backup --exclude-file), one per line, from
+# restic_backup_exclude. restic skips lines that start with #.
+{% for pattern in restic_backup_exclude %}
+{{ pattern }}
+{% endfor %}

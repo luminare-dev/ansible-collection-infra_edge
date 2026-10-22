@@ -76,7 +76,7 @@ gh attestation verify <archive>.tar.gz --repo luminare-dev/ansible-collection-in
 
 The collection contains a complete example inventory for its playbook in `examples/edge/` (the
 same folder as in the repository). Copy it, put your values into `inventory.yml` and
-`group_vars/edge/main.yml`, create `group_vars/edge/vault.yml` with the three `vault_*` values,
+`group_vars/edge/main.yml`, create `group_vars/edge/vault.yml` with the six `vault_*` values,
 export the tunnel token and run the playbook by its name (details in the
 [example's README](../examples/edge/README.md)):
 

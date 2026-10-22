@@ -1,0 +1,55 @@
+# The backup script and its sandboxed oneshot service with a nightly timer, the check service
+# with a monthly timer, and the restore test (docs/adr/0019, docs/adr/0020). The files are always
+# written, so both services can be started by hand; restic_backup_timers_enabled switches the
+# timers.
+
+- name: Write the backup script and the restore test
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - src: restic-backup.sh.j2
+      dest: "{{ restic_backup_script }}"
+    - src: restic-restore-test.py.j2
+      dest: "{{ restic_backup_restore_test_script }}"
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Write the backup and check services and their timers
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ restic_backup_unit_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - restic-backup.service
+    - restic-backup.timer
+    - restic-check.service
+    - restic-check.timer
+  notify: Restart the restic timers
+
+# Check mode writes nothing, so a timer unit that does not exist yet can neither be enabled nor
+# restarted (the handler has the same condition); such a run only reports the files.
+- name: Find the timer units
+  ansible.builtin.stat:
+    path: "{{ restic_backup_unit_dir }}/{{ item }}"
+    get_checksum: false
+  loop:
+    - restic-backup.timer
+    - restic-check.timer
+  register: restic_backup_timer_stat
+
+- name: Enable and start the timers, or stop and disable them
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    enabled: "{{ restic_backup_timers_enabled }}"
+    state: "{{ restic_backup_timers_enabled | ternary('started', 'stopped') }}"
+    daemon_reload: true
+  loop: "{{ restic_backup_timer_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists or not ansible_check_mode

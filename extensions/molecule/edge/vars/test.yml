@@ -23,6 +23,15 @@ edge_test_lan_hosts:
 vault_base_admin_password_hash: "$6$moleculesalt$UUcGhu8ui5otSXdg2.iut2Knsyzo7SiPBxqPr8x06k.m973QY2Uu5R3Syb76aQoUWiuxiK8OeMsBr.cyaJYxQ0"
 vault_edge_app_db_password: molecule-app-only
 vault_edge_app_reader_db_password: molecule-reader-only
+vault_edge_backup_password: molecule-backup-only
+vault_edge_backup_s3_key_id: MOLECULEKEYID
+vault_edge_backup_s3_secret: molecule-s3-secret-only
+
+# In place of the example's S3 bucket (restic_backup_repository in examples/edge/inventory.yml,
+# which Molecule does not read): a local folder in the instance, so no bucket or credential is
+# needed and nothing leaves the instance. The synthetic S3 key above still goes into the
+# environment file of the role, where restic ignores it for a local repository.
+edge_test_restic_repository: /srv/restic-repo
 
 # A synthetic token in the format of a tunnel token, base64 of {"a": account tag, "t": tunnel ID,
 # "s": secret}; it belongs to no account and no tunnel (as in the cloudflared scenario).

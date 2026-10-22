@@ -1,0 +1,14 @@
+# Handler names are global in a play, so they name restic. A changed OnCalendar takes effect with
+# the next start of a timer; a changed service file with the next daemon reload, which the restart
+# and the enable task in jobs.yml run.
+- name: Restart the restic timers
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ restic_backup_timer_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - restic_backup_timers_enabled
+    - item.stat.exists or not ansible_check_mode

@@ -13,9 +13,10 @@
 # 192.0.2.0/24 with the application host and a network namespace "lan" for the hosts outside,
 # a test application behind the nginx site, and a drop-in that keeps the tunnel connector away
 # from every network. converge.yml sets the values that the operator would provide (SSH keys,
-# vault values, the tunnel token) and imports the playbook. verify.yml checks the roles together:
-# the composed firewall from the other hosts, the listeners, a request through nginx to the
-# application and its database, and the connector.
+# vault values, the tunnel token, a local backup repository) and imports the playbook, with
+# restic_backup switched on as in the example. verify.yml checks the roles together: the composed
+# firewall from the other hosts, the listeners, a request through nginx to the application and
+# its database, the connector, and a backup of the database dumps with a restore test.
 dependency:
   name: galaxy
   options:

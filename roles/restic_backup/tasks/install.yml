@@ -1,0 +1,66 @@
+# restic from the distribution (default), or the pinned upstream release (docs/adr/0018). The
+# package method installs /usr/bin/restic without the recommended packages (fuse and the HTML
+# documentation). The binary method installs /usr/local/bin/restic and leaves the package alone.
+
+- name: Install the restic package of the distribution
+  ansible.builtin.apt:
+    name: "{{ restic_backup_package }}"
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+  when: restic_backup_install_method == 'package'
+
+- name: Install the pinned upstream release
+  when: restic_backup_install_method == 'binary'
+  vars:
+    restic_backup_arch: "{{ restic_backup_architectures[ansible_facts['architecture']] }}"
+    restic_backup_release_file: restic_{{ restic_backup_version }}_linux_{{ restic_backup_arch }}.bz2
+  block:
+    # A missing or older binary fails or prints another version; both lead to the download.
+    - name: Read the version of the installed upstream binary
+      ansible.builtin.command:
+        argv: ["{{ restic_backup_upstream_binary }}", version]
+      register: restic_backup_installed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Download, check and install the release file
+      when: >-
+        restic_backup_installed.rc != 0
+        or not restic_backup_installed.stdout.startswith('restic ' ~ restic_backup_version ~ ' ')
+      block:
+        - name: Create the download directory
+          ansible.builtin.file:
+            path: "{{ restic_backup_download_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Download the release file and check its SHA-256
+          ansible.builtin.get_url:
+            url: "{{ restic_backup_release_url }}/v{{ restic_backup_version }}/{{ restic_backup_release_file }}"
+            dest: "{{ restic_backup_download_dir }}/{{ restic_backup_release_file }}"
+            checksum: sha256:{{ restic_backup_binary_sha256[restic_backup_arch] }}
+            owner: root
+            group: root
+            mode: "0600"
+
+        # In check mode the file is not downloaded, so there is nothing to decompress.
+        - name: Decompress the binary to /usr/local/bin/restic
+          community.general.decompress:
+            src: "{{ restic_backup_download_dir }}/{{ restic_backup_release_file }}"
+            dest: "{{ restic_backup_upstream_binary }}"
+            format: bz2
+            owner: root
+            group: root
+            mode: "0755"
+          when: not ansible_check_mode
+
+      always:
+        - name: Remove the download directory
+          ansible.builtin.file:
+            path: "{{ restic_backup_download_dir }}"
+            state: absent

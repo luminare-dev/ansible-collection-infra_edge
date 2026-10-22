@@ -29,7 +29,10 @@ INSTANCE_PREFIX = "ie-"
 PLATFORM_NAME_RE = re.compile(r"ie-\$\{MOLECULE_ROLE:-role\}-([a-z0-9]+)")
 EDGE_SCENARIO = "extensions/molecule/edge"
 EDGE_ROLES = ["luminare.infra_edge.base", "luminare.infra_edge.cloudflared", "luminare.infra_edge.nginx",
-              "luminare.infra_edge.mariadb"]
+              "luminare.infra_edge.mariadb", "luminare.infra_edge.restic_backup"]
+# Variables of the playbook itself (docs/configuration.md); every other inventory value is a role option.
+EDGE_PLAYBOOK_VARS = {"edge_hosts", "edge_restic_backup_enabled"}
+EDGE_SWITCH = "edge_restic_backup_enabled | default(false) | bool"
 DIGEST_FROM_RE = re.compile(r"^FROM (debian:trixie|ubuntu:24\.04)@sha256:[0-9a-f]{64}$", re.MULTILINE)
 
 # Repository files that must never reach the installed collection, and files that must.
@@ -39,7 +42,8 @@ NOT_IN_TARBALL_ANYWHERE = re.compile(
     r"(^|/)\.ansible(/|$)|^roles/[^/]+/molecule(/|$)|^extensions(/|$)|^tests(/|$)|(^|/)__pycache__(/|$)"
     r"|\.tar\.gz$")
 IN_TARBALL = ("README.md", "LICENSE", "NOTICE", "CHANGELOG.md", "meta/runtime.yml", "roles/README.md",
-              "playbooks/edge.yml", "examples/edge/inventory.yml", "examples/edge/group_vars/edge/main.yml")
+              "playbooks/edge.yml", "examples/edge/inventory.yml", "examples/edge/group_vars/edge/main.yml",
+              "roles/restic_backup/files/repository_state.py")
 
 
 def load_yaml(rel: str):
@@ -201,7 +205,7 @@ class MoleculeConfigTest(unittest.TestCase):
 
 @unittest.skipIf(yaml is None, "PyYAML is not installed (pip install -r requirements-test.txt)")
 class EdgePlaybookTest(unittest.TestCase):
-    """playbooks/edge.yml composes the four roles; examples/edge/ is its complete example inventory."""
+    """playbooks/edge.yml composes the roles; examples/edge/ is its complete example inventory."""
 
     def role_options(self):
         options = {}
@@ -209,13 +213,17 @@ class EdgePlaybookTest(unittest.TestCase):
             options.update(yaml.safe_load(spec.read_text(encoding="utf-8"))["argument_specs"]["main"]["options"])
         return options
 
-    def test_play_runs_the_four_roles_in_order(self):
+    def test_play_runs_the_roles_in_order(self):
+        """The four roles always run; restic_backup only with its switch, which is off by default."""
         plays = load_yaml("playbooks/edge.yml")
         self.assertEqual(len(plays), 1)
         play = plays[0]
         self.assertEqual(play["hosts"], "{{ edge_hosts | default('edge') }}")
         self.assertIs(play["become"], True)
         self.assertEqual([r["role"] for r in play["roles"]], EDGE_ROLES)
+        self.assertEqual([r.get("when") for r in play["roles"]], [None, None, None, None, EDGE_SWITCH])
+        for role in play["roles"]:
+            self.assertEqual(sorted(role), sorted({"role", "when"} & set(role)), role)
         self.assertNotIn("vars", play, "values belong in the inventory, not in the playbook")
 
     def test_example_inventory_has_one_edge_host(self):
@@ -224,13 +232,16 @@ class EdgePlaybookTest(unittest.TestCase):
         self.assertEqual(list(hosts), ["edge-01.example.com"])
         for name in hosts["edge-01.example.com"]:
             self.assertTrue(name.startswith("ansible_") or name in self.role_options(), name)
+        self.assertTrue(hosts["edge-01.example.com"]["restic_backup_repository"].startswith("s3:https://s3.example.com/"))
 
     def test_example_group_vars_are_role_variables(self):
         """A typo in the example would silently fall back to a default; every key must be a role option."""
         group_vars = load_yaml("examples/edge/group_vars/edge/main.yml")
         options = self.role_options()
         for name in group_vars:
-            self.assertIn(name, options, f"{name} is not a variable of the four roles")
+            self.assertTrue(name in options or name in EDGE_PLAYBOOK_VARS,
+                            f"{name} is not a variable of the playbook or of its roles")
+        self.assertIs(group_vars["edge_restic_backup_enabled"], True)
 
     def test_example_keeps_secrets_out(self):
         """Secrets of the example come from the vault file or the environment, never as values."""
@@ -239,6 +250,9 @@ class EdgePlaybookTest(unittest.TestCase):
         self.assertEqual(group_vars["base_admin_password_hash"], "{{ vault_base_admin_password_hash }}")
         for item in group_vars["mariadb_databases"]:
             self.assertRegex(item["password"], r"^\{\{ vault_[a-z_]+ \}\}$")
+        self.assertRegex(group_vars["restic_backup_password"], r"^\{\{ vault_[a-z0-9_]+ \}\}$")
+        for value in group_vars["restic_backup_env"].values():
+            self.assertRegex(value, r"^\{\{ vault_[a-z0-9_]+ \}\}$")
 
 
 class RoleLayoutTest(unittest.TestCase):

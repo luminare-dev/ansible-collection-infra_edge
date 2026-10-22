@@ -1,0 +1,28 @@
+# Sandbox: read access to the whole system (CAP_DAC_READ_SEARCH lets root read files of other
+# users), write access only to the cache{% if restic_backup_local_repository %}, the local repository{% endif %} and the status{% if restic_backup_textfile_dir %} and textfile{% endif %} folders,
+# home folders read-only, private /tmp and /dev, and network access only over IP and Unix sockets
+# for the backends.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths={{ restic_backup_cache_dir }} {{ restic_backup_state_dir }}{% if restic_backup_local_repository %} {{ restic_backup_local_repository }}{% endif %}{% if restic_backup_textfile_dir %} -{{ restic_backup_textfile_dir }}{% endif %}
+
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

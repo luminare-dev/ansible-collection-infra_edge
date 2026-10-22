@@ -24,7 +24,8 @@ Each role of the collection lives in its own folder here and is used by its full
 | `luminare.infra_edge.cloudflared` | [cloudflared/README.md](cloudflared/README.md) |
 | `luminare.infra_edge.nginx` | [nginx/README.md](nginx/README.md) |
 | `luminare.infra_edge.mariadb` | [mariadb/README.md](mariadb/README.md) |
+| `luminare.infra_edge.restic_backup` | [restic_backup/README.md](restic_backup/README.md) |
 
-The playbook [`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the four roles together on
-one host, with the example inventory in [`examples/edge/`](../examples/edge/); its Molecule
+The playbook [`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the roles together on one
+host (`restic_backup` when `edge_restic_backup_enabled` is true), with the example inventory in [`examples/edge/`](../examples/edge/); its Molecule
 scenario is [`extensions/molecule/edge/`](../extensions/molecule/edge/molecule.yml).

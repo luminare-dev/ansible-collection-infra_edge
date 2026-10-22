@@ -1,5 +1,6 @@
 # Values for every host in the group "edge" of the example inventory. docs/configuration.md lists
-# all variables of the four roles with their defaults; only what differs from a default is here.
+# all variables of the playbook and its roles with their defaults; only what differs from a default
+# is here.
 #
 # Secrets are not in this file:
 # - The tunnel token comes from the environment variable TUNNEL_TOKEN of the control node (the
@@ -47,3 +48,15 @@ mariadb_databases:
     host: 192.0.2.13
     priv: "app.*:SELECT"
     password: "{{ vault_edge_app_reader_db_password }}"
+
+# restic_backup: switched on in the playbook (it is off by default). Every night at 03:45, after
+# the dumps of mariadb at 03:15, restic backs up /etc and /var/backups (the default paths, with
+# /var/backups/mariadb) to an S3-compatible bucket off the host and keeps 7 daily, 4 weekly and 6
+# monthly snapshots. The repository of each host is set in inventory.yml; the password and the
+# access key of the bucket come from the vault file. Keep a copy of the password outside the host
+# and the bucket: without it the snapshots cannot be read.
+edge_restic_backup_enabled: true
+restic_backup_password: "{{ vault_edge_backup_password }}"
+restic_backup_env:
+  AWS_ACCESS_KEY_ID: "{{ vault_edge_backup_s3_key_id }}"
+  AWS_SECRET_ACCESS_KEY: "{{ vault_edge_backup_s3_secret }}"

@@ -1,0 +1,70 @@
+#!/bin/bash
+# {{ ansible_managed }} (luminare.infra_edge.restic_backup)
+# The backup of this host, run by restic-backup.service (start it by hand with
+# "systemctl start restic-backup.service"):
+#   1. checks that every path exists: restic 0.16 to 0.18 skip a missing path without an error,
+#      so the script fails instead, on every restic version;
+#   2. restic backup of the paths, without folders tagged as caches (CACHEDIR.TAG) and the
+#      patterns of {{ restic_backup_exclude_file }};
+#   3. restic forget --prune of the snapshots of this host with the retention policy;
+#   4. writes the time of this run to {{ restic_backup_status_file }}{% if restic_backup_textfile_dir %} and the metric
+#      restic_backup_last_success_timestamp_seconds to {{ restic_backup_textfile_dir }}/{{ restic_backup_metric_file }}{% endif %}.
+# A failure in any step stops the script before step 4 (restic exits with 3 when it could not read
+# a file), so the status keeps the time of the last run without errors.
+set -euo pipefail
+umask 077
+
+restic={{ restic_backup_wrapper | quote }}
+paths=({% for path in restic_backup_paths %} {{ path | quote }}{% endfor %} )
+keep=({% for kind, count in restic_backup_keep | dictsort %} --keep-{{ kind }} {{ count | int }}{% endfor %} )
+status_file={{ restic_backup_status_file | quote }}
+textfile_dir={{ restic_backup_textfile_dir | quote }}
+# The host name that restic records in each snapshot; forget and the restore test use only the
+# snapshots of this host.
+host=$(uname -n)
+tmp=""
+
+cleanup() {
+  if [ -n "$tmp" ]; then
+    rm -f -- "$tmp"
+  fi
+}
+trap cleanup EXIT
+
+# write_file <file> <content>: written to a temporary file in the same folder and renamed, so a
+# reader never sees half a file. The temporary name does not end in .prom, so the textfile
+# collector ignores it.
+write_file() {
+  tmp=$(mktemp "$(dirname -- "$1")/.restic-backup.XXXXXX")
+  printf '%s' "$2" > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$1"
+  tmp=""
+}
+
+missing=""
+for path in "${paths[@]}"; do
+  if [ ! -e "$path" ]; then
+    missing="$missing $path"
+  fi
+done
+if [ -n "$missing" ]; then
+  echo "restic-backup: nothing backed up, these paths do not exist:$missing" >&2
+  exit 1
+fi
+
+"$restic" --retry-lock {{ restic_backup_retry_lock }} backup --host "$host" --exclude-caches \
+  --exclude-file {{ restic_backup_exclude_file | quote }} "${paths[@]}"
+"$restic" --retry-lock {{ restic_backup_retry_lock }} forget --host "$host" --prune "${keep[@]}"
+
+now=$(date +%s)
+write_file "$status_file" "$now"$'\n'
+if [ -n "$textfile_dir" ]; then
+  write_file "$textfile_dir/{{ restic_backup_metric_file }}" "\
+# HELP restic_backup_last_success_timestamp_seconds Unix time of the last restic backup run without errors (backup and forget --prune).
+# TYPE restic_backup_last_success_timestamp_seconds gauge
+restic_backup_last_success_timestamp_seconds $now
+"
+fi
+
+echo "restic-backup: backed up ${paths[*]} of host $host, applied the retention (${keep[*]}) and recorded the time $now in $status_file."

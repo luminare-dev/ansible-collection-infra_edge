@@ -1,0 +1,142 @@
+# Checks that need more than the types in meta/argument_specs.yml. They run before any change.
+# Values from the inventory are written into a shell script, a Python script, unit files and the
+# environment file, so every value must match a strict pattern (vars/main.yml). Messages never
+# print the repository, the password or the values of restic_backup_env: a repository address can
+# hold a user name and a password, and an assert reports its failed condition, not the values.
+
+- name: Gather the facts the role needs (distribution, architecture)
+  ansible.builtin.setup:
+    gather_subset: [min]
+  when: ansible_facts['distribution'] is not defined or ansible_facts['architecture'] is not defined
+
+- name: Check that the host runs a supported distribution and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in restic_backup_supported_platforms
+      - ansible_facts['distribution_major_version'] in restic_backup_supported_platforms[ansible_facts['distribution']]
+      - ansible_facts['architecture'] in restic_backup_architectures
+    fail_msg: >-
+      luminare.infra_edge.restic_backup supports Debian 13 and Ubuntu 24.04 on x86_64 and aarch64; this
+      host runs {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} on
+      {{ ansible_facts['architecture'] }}.
+    quiet: true
+
+- name: Check the upstream release for the binary method
+  vars:
+    restic_backup_check_arch: "{{ restic_backup_architectures[ansible_facts['architecture']] }}"
+  ansible.builtin.assert:
+    that:
+      - restic_backup_version is match(restic_backup_version_pattern)
+      - restic_backup_check_arch in restic_backup_binary_sha256
+      - restic_backup_binary_sha256[restic_backup_check_arch] is match(restic_backup_sha256_pattern)
+    fail_msg: >-
+      restic_backup_install_method binary needs restic_backup_version as x.y.z and, in
+      restic_backup_binary_sha256, the SHA-256 (64 lower-case hex digits) of
+      restic_{{ restic_backup_version }}_linux_{{ restic_backup_check_arch }}.bz2
+      from the SHA256SUMS file of that release.
+    quiet: true
+  when: restic_backup_install_method == 'binary'
+
+- name: Check that the repository and its password are set
+  ansible.builtin.assert:
+    that:
+      - restic_backup_repository is match(restic_backup_repository_pattern)
+      - restic_backup_password | length > 0
+      - restic_backup_password is not search('[\r\n\x00]')
+      - restic_backup_password == restic_backup_password | trim
+    fail_msg: >-
+      Set restic_backup_repository to the repository of this host (an absolute path or
+      <backend>:<location> of local, sftp, rest, s3, b2, azure, gs, swift or rclone, without spaces)
+      and restic_backup_password to its password (no line break, no spaces at either end), both from
+      an encrypted source such as Ansible Vault.
+    quiet: true
+
+- name: Check the environment variables for the backend (names only)
+  vars:
+    restic_backup_check_names: "{{ restic_backup_env.keys() | map('string') | list }}"
+    restic_backup_check_values: "{{ restic_backup_env.values() | list }}"
+  ansible.builtin.assert:
+    that:
+      - restic_backup_check_names | reject('match', restic_backup_env_name_pattern) | list | length == 0
+      - restic_backup_check_names | select('match', restic_backup_reserved_env_pattern) | list | length == 0
+      - restic_backup_check_values | reject('string') | reject('number') | list | length == 0
+      - restic_backup_check_values | map('string') | select('search', '[\r\n\x00]') | list | length == 0
+    fail_msg: >-
+      restic_backup_env must map names in capitals (letters, digits and _) to single-line text values,
+      and may not set RESTIC_REPOSITORY*, RESTIC_PASSWORD* or RESTIC_CACHE_DIR, which the role sets.
+      Names: {{ restic_backup_check_names }}.
+    quiet: true
+
+# A path ends up in the backup script and the restore test; the textfile folder and a local
+# repository also in the sandbox of the units (ReadWritePaths).
+- name: Check the paths, the exclude patterns, the retention and the folders
+  vars:
+    restic_backup_check_inside: "^({{ restic_backup_paths | map('regex_escape') | join('|') }})(/|$)"
+    restic_backup_check_whole: "{{ '/' in restic_backup_paths }}"
+    restic_backup_check_folders: >-
+      {{ [restic_backup_restore_test_dir]
+         + ([restic_backup_textfile_dir] if restic_backup_textfile_dir | length > 0 else [])
+         + ([restic_backup_local_repository] if restic_backup_local_repository | length > 0 else []) }}
+  ansible.builtin.assert:
+    that:
+      - restic_backup_paths | length > 0
+      - restic_backup_paths | reject('match', restic_backup_path_pattern) | list | length == 0
+      - restic_backup_paths | unique | length == restic_backup_paths | length
+      - restic_backup_exclude | map('string') | reject('match', restic_backup_exclude_pattern) | list | length == 0
+      - restic_backup_keep | length > 0
+      - restic_backup_keep.values() | map('int') | select('lt', 1) | list | length == 0
+      - restic_backup_check_folders | reject('match', restic_backup_path_pattern) | list | length == 0
+      - restic_backup_check_folders | select('match', restic_backup_dir_forbidden_pattern) | list | length == 0
+      - restic_backup_restore_test_include | reject('match', restic_backup_path_pattern) | list | length == 0
+      - >-
+        restic_backup_check_whole
+        or restic_backup_restore_test_include | reject('match', restic_backup_check_inside) | list | length == 0
+      - restic_backup_max_age_hours | int >= 1
+    fail_msg: >-
+      restic_backup_paths must list absolute paths (letters, digits and . _ @ + -, no "." or ".." parts,
+      each once), restic_backup_exclude single-line patterns that do not start with # or a space, and
+      restic_backup_keep at least one kind with a count of 1 or more. restic_backup_restore_test_dir,
+      restic_backup_textfile_dir and a local repository must be absolute paths outside / and the system
+      folders, every path of restic_backup_restore_test_include inside one of restic_backup_paths, and
+      restic_backup_max_age_hours at least 1. Paths: {{ restic_backup_paths }}; restore test:
+      {{ restic_backup_restore_test_include }} in {{ restic_backup_restore_test_dir }}; textfile folder:
+      "{{ restic_backup_textfile_dir }}".
+    quiet: true
+
+# A local repository inside a backed-up path would be copied into itself on every run.
+- name: Check that a local repository is outside the backed-up paths
+  vars:
+    restic_backup_check_inside: "^({{ restic_backup_paths | map('regex_escape') | join('|') }})(/|$)"
+    restic_backup_check_contains: "^{{ restic_backup_local_repository | regex_escape }}(/|$)"
+  ansible.builtin.assert:
+    that:
+      - "'/' not in restic_backup_paths"
+      - restic_backup_local_repository is not match(restic_backup_check_inside)
+      - restic_backup_paths | select('match', restic_backup_check_contains) | list | length == 0
+    fail_msg: >-
+      A local repository may not be inside one of restic_backup_paths, and no backed-up path inside it:
+      choose a folder outside {{ restic_backup_paths | join(', ') }} (or use an off-host repository).
+    quiet: true
+  when: restic_backup_local_repository | length > 0
+
+- name: Check the timer and check settings
+  ansible.builtin.assert:
+    that:
+      - restic_backup_oncalendar is match(restic_backup_oncalendar_pattern)
+      - restic_backup_check_oncalendar is match(restic_backup_oncalendar_pattern)
+      - restic_backup_check_read_data_subset is match(restic_backup_read_data_subset_pattern)
+    fail_msg: >-
+      restic_backup_oncalendar and restic_backup_check_oncalendar must be systemd calendar expressions such
+      as "*-*-* 03:45:00" or "monthly", and restic_backup_check_read_data_subset empty, a percentage such
+      as 5% or a part n/t such as 1/12.
+    quiet: true
+
+# systemd parses the expressions itself, so a typo fails here instead of in the timer units.
+- name: Check the calendar expressions of the timers with systemd
+  ansible.builtin.command:
+    argv: [systemd-analyze, calendar, "{{ item }}"]
+  changed_when: false
+  check_mode: false
+  loop:
+    - "{{ restic_backup_oncalendar }}"
+    - "{{ restic_backup_check_oncalendar }}"

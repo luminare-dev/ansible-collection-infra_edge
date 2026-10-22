@@ -1,0 +1,19 @@
+# luminare.infra_edge.restic_backup: the order matters. The checks run before any change; restic is
+# installed before the repository can be reached; the new settings are tried against the repository
+# before they replace the old ones; the repository exists before the timers can start a backup.
+
+- name: Check the inputs before changing anything
+  ansible.builtin.import_tasks: assert.yml
+  tags: [restic_backup, always]
+
+- name: Install restic
+  ansible.builtin.import_tasks: install.yml
+  tags: [restic_backup, restic_backup_install]
+
+- name: Write the settings and initialise the repository if it does not exist
+  ansible.builtin.import_tasks: repository.yml
+  tags: [restic_backup, restic_backup_repository]
+
+- name: Install the backup and restore test scripts, the services and the timers
+  ansible.builtin.import_tasks: jobs.yml
+  tags: [restic_backup, restic_backup_jobs]

@@ -1,8 +1,9 @@
 # The playbook of the collection as an operator runs it with the example inventory. The first play
 # only provides what the operator would add to the example: the SSH keys, the values of the vault
-# file, the tunnel token, the host's private address from examples/edge/inventory.yml (which
-# Molecule does not read) and a small buffer pool for the container. set_fact values take
-# precedence over the group_vars of the example and stay set for the imported play.
+# file, the tunnel token, the host's private address and backup repository from
+# examples/edge/inventory.yml (which Molecule does not read; a local folder in place of the S3
+# bucket) and a small buffer pool for the container. set_fact values take precedence over the
+# group_vars of the example and stay set for the imported play.
 - name: Provide the values that the example inventory leaves to the operator
   hosts: all
   gather_facts: false
@@ -14,7 +15,7 @@
         src: "{{ edge_test_key_file }}.pub"
       register: edge_test_key
 
-    - name: Set the keys, the vault values, the synthetic token and the private address
+    - name: Set the keys, the vault values, the synthetic token, the private address and the repository
       ansible.builtin.set_fact:
         base_admin_ssh_keys:
           - "{{ edge_test_key.content | b64decode | trim }}"
@@ -23,6 +24,9 @@
         vault_base_admin_password_hash: "{{ vault_base_admin_password_hash }}"
         vault_edge_app_db_password: "{{ vault_edge_app_db_password }}"
         vault_edge_app_reader_db_password: "{{ vault_edge_app_reader_db_password }}"
+        vault_edge_backup_password: "{{ vault_edge_backup_password }}"
+        vault_edge_backup_s3_key_id: "{{ vault_edge_backup_s3_key_id }}"
+        vault_edge_backup_s3_secret: "{{ vault_edge_backup_s3_secret }}"
         cloudflared_token: "{{ edge_test_token }}"
         # An edge address on the loopback interface: in the network namespace of prepare.yml,
         # cloudflared keeps retrying it instead of looking up Cloudflare's edge and exiting.
@@ -30,6 +34,7 @@
           - --edge
           - 127.0.0.1:7844
         mariadb_bind_address: "{{ edge_test_private_address }}"
+        restic_backup_repository: "{{ edge_test_restic_repository }}"
         # The default is a quarter of the memory that the container sees (the whole test machine).
         mariadb_innodb_buffer_pool_size: 128M
       no_log: true

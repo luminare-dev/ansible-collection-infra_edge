@@ -1,0 +1,123 @@
+# The settings of the repository live in root-only files under /etc/restic, which the wrapper
+# /usr/local/sbin/restic-env reads for every restic run (docs/adr/0019). Before they are written,
+# the new settings are tried against the repository: a wrong password, wrong credentials or an
+# unreachable backend stop the role and leave the old settings, and with them the running backups,
+# alone. The repository is initialised only when restic reports that it does not exist; restic
+# init itself refuses a location that already holds a repository.
+
+- name: Create the folders for the settings, the cache and the status
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ restic_backup_config_dir }}", mode: "0700"}
+    - {path: "{{ restic_backup_cache_dir }}", mode: "0700"}
+    - {path: "{{ restic_backup_state_dir }}", mode: "0755"}
+  loop_control:
+    label: "{{ item.path }}"
+
+# The textfile folder belongs to node_exporter: the role creates it when it is missing and never
+# changes the owner or mode of an existing one.
+- name: Find the textfile folder of node_exporter
+  ansible.builtin.stat:
+    path: "{{ restic_backup_textfile_dir }}"
+    get_checksum: false
+  register: restic_backup_textfile_stat
+  when: restic_backup_textfile_dir | length > 0
+
+- name: Create the textfile folder when it is missing
+  ansible.builtin.file:
+    path: "{{ restic_backup_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - restic_backup_textfile_dir | length > 0
+    - not restic_backup_textfile_stat.stat.exists
+
+- name: Write the wrapper that runs restic with the settings of this host
+  ansible.builtin.template:
+    src: restic-env.sh.j2
+    dest: "{{ restic_backup_wrapper }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+# In check mode on a host without restic there is nothing to ask; on a host with restic the
+# question only reads.
+- name: Find the restic binary
+  ansible.builtin.stat:
+    path: "{{ restic_backup_restic }}"
+    get_checksum: false
+  register: restic_backup_binary_stat
+
+- name: Open the repository with the new settings (given on standard input, not as arguments)
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -c, "{{ lookup('ansible.builtin.file', 'repository_state.py') }}"]
+    stdin: >-
+      {{ {'restic': restic_backup_restic, 'repository': restic_backup_repository,
+          'password': restic_backup_password, 'env': restic_backup_env} | to_json }}
+  register: restic_backup_probe
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: restic_backup_binary_stat.stat.exists or not ansible_check_mode
+
+- name: Read the state of the repository
+  ansible.builtin.set_fact:
+    restic_backup_repository_state: "{{ restic_backup_probe.stdout | from_json }}"
+  when: restic_backup_probe is not skipped
+
+- name: Stop when the repository cannot be opened with the new settings
+  ansible.builtin.assert:
+    that:
+      - restic_backup_repository_state.state in ['exists', 'missing']
+    fail_msg: >-
+      {{ 'The repository exists, but restic_backup_password does not open it'
+         if restic_backup_repository_state.state == 'wrong-password'
+         else 'restic cannot open the repository (exit code ' ~ restic_backup_repository_state.rc ~ ')' }}.
+      The settings on the host were not changed. restic said: {{ restic_backup_repository_state.stderr }}
+    quiet: true
+  when: restic_backup_probe is not skipped
+
+- name: Write the repository settings (/etc/restic/env)
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ restic_backup_env_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: Write the repository password (/etc/restic/password)
+  ansible.builtin.copy:
+    content: "{{ restic_backup_password }}\n"
+    dest: "{{ restic_backup_password_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: Write the exclude patterns (/etc/restic/excludes)
+  ansible.builtin.template:
+    src: excludes.j2
+    dest: "{{ restic_backup_exclude_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Initialise the repository
+  ansible.builtin.command:
+    argv: ["{{ restic_backup_wrapper }}", init]
+  register: restic_backup_init
+  changed_when: true
+  when:
+    - restic_backup_probe is not skipped
+    - restic_backup_repository_state.state == 'missing'
+    - not ansible_check_mode
