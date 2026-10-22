@@ -1,8 +1,12 @@
 # Dependabot version updates (https://docs.github.com/en/code-security/dependabot).
-# Keeps the SHA pins of the workflow actions and their "# vX.Y.Z" comments current, and the
-# hash-pinned Python tools in requirements-dev.txt. A 7-day cooldown lets a bad release surface
+# Keeps the SHA pins of the workflow actions and their "# vX.Y.Z" comments current, the
+# hash-pinned Python tools in requirements-dev.txt (written by hand) and requirements-test.txt
+# (compiled by pip-compile from requirements-test.in), and the digests of the Molecule base images
+# in .config/molecule/Dockerfile.j2 (digests only: the tested platforms stay Debian 13 "trixie" and
+# Ubuntu 24.04, so "ubuntu" never gets a tag bump). A 7-day cooldown lets a bad release surface
 # before it lands here. The pinned gitleaks and actionlint downloads (version + sha256 inputs in
-# the reusable workflows) are not seen by Dependabot; bump them by hand (PUBLISHING.md, monthly).
+# the reusable workflows) are not seen by Dependabot; bump them by hand once a month. Every update
+# gets a Conventional Commit title for the pr-title check.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -33,4 +37,23 @@ updates:
     labels: [dependencies]
     groups:
       dev-tools:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /.config/molecule
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: test
+      include: scope
+    labels: [dependencies]
+    ignore:
+      # 24.04 looks like a version, so Dependabot would also offer 24.10, 26.04 and later.
+      - dependency-name: ubuntu
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      molecule-images:
         patterns: ["*"]
