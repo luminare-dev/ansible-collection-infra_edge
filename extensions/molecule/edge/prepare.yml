@@ -1,0 +1,124 @@
+# What the example inventory assumes around the edge host, built inside the instance:
+# 1. The private network of the example: the instance gets 192.0.2.10 on a veth pair whose other
+#    end lies in the network namespace "lan". That namespace holds the hosts outside, one address
+#    each: the application host 192.0.2.13, a host of a management network (198.51.100.7) and
+#    another host (192.0.2.66). Their packets reach the instance over the veth pair, not over the
+#    loopback interface, so the firewall of the base role decides about them. verify.yml connects
+#    from there with files/edge_probe.py, ssh and the mariadb client.
+# 2. A throwaway SSH key pair for both users of the base role (converge.yml), generated here, so no
+#    key material is in the repository.
+# 3. The application behind the nginx site "app" (files/edge_app.py on 127.0.0.1:3000), which logs
+#    in to the database with the example's account over the socket.
+# 4. A drop-in that keeps the tunnel connector in a network namespace with only a loopback
+#    interface (as in the cloudflared scenario), so the synthetic token never reaches Cloudflare.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - vars/test.yml
+  tasks:
+    # systemd-networkd manages no interface in the containers, so its wait-online service would
+    # hold network-online.target, which the units of nginx and cloudflared wait for.
+    - name: Mask systemd-networkd-wait-online (container network, not configured by networkd)
+      ansible.builtin.systemd_service:
+        name: systemd-networkd-wait-online.service
+        masked: true
+
+    - name: Install the SSH client for the login checks
+      ansible.builtin.apt:
+        name: openssh-client
+        state: present
+        update_cache: true
+
+    - name: Generate the test key pair
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N "" -C molecule-test -f {{ edge_test_key_file }}
+        creates: "{{ edge_test_key_file }}"
+
+    - name: Create the private network and the namespace "lan" with the hosts outside
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          ip netns add lan
+          ip link add edge0 type veth peer name lan0 netns lan
+          ip address add {{ edge_test_private_address }}/24 dev edge0
+          ip link set edge0 up
+          ip route add {{ base_mgmt_cidrs | first }} dev edge0
+          ip -n lan link set lo up
+          ip -n lan address add {{ edge_test_lan_hosts.app }}/24 dev lan0
+          ip -n lan address add {{ edge_test_lan_hosts.other }}/24 dev lan0
+          ip -n lan address add {{ edge_test_lan_hosts.mgmt }}/24 dev lan0
+          ip -n lan link set lan0 up
+        executable: /bin/bash
+        creates: /run/netns/lan
+
+    - name: Copy the test application and the probe
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - src: edge_app.py
+          dest: /usr/local/bin/edge-app
+        - src: edge_probe.py
+          dest: /usr/local/bin/edge-probe
+
+    - name: Write the database account of the test application (the example's account on localhost)
+      vars:
+        account: "{{ mariadb_databases | selectattr('host', 'equalto', 'localhost') | first }}"
+      ansible.builtin.copy:
+        dest: /etc/edge-app.env
+        mode: "0600"
+        content: |
+          EDGE_APP_DB_USER={{ account.user }}
+          EDGE_APP_DB_PASSWORD={{ account.password }}
+          EDGE_APP_DB_NAME={{ account.name }}
+      no_log: true
+      diff: false
+
+    - name: Write the unit of the test application
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/edge-app.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Test application of the Molecule scenario "edge"
+
+          [Service]
+          ExecStart=/usr/bin/python3 /usr/local/bin/edge-app
+          EnvironmentFile=/etc/edge-app.env
+          User=nobody
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start the test application
+      ansible.builtin.systemd_service:
+        name: edge-app.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for the test application
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 3000
+        timeout: 30
+
+    - name: Create the drop-in directory of the connector unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/cloudflared.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Keep the connector in a network namespace with only a loopback interface
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cloudflared.service.d/90-molecule-no-network.conf
+        mode: "0644"
+        content: |
+          # Molecule only (extensions/molecule/edge/prepare.yml): no network but loopback, so the
+          # synthetic token never reaches Cloudflare. Without a connection cloudflared never
+          # reports readiness, so systemd treats the service as started when the process runs.
+          [Service]
+          PrivateNetwork=yes
+          Type=simple

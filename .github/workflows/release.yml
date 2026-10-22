@@ -21,12 +21,14 @@ jobs:
     if: ${{ !github.event.repository.is_template }}
     uses: ./.github/workflows/reusable-release.yml
     with:
-      # The build job runs on the bare runner Python, so the test tools get their own venv.
+      # The build job runs on the bare runner Python, so the test tools get their own venv. As in
+      # ci.yml, the checkout is installed without its dependencies before ansible-lint --offline.
       test-command: >-
         python3 -m venv "$RUNNER_TEMP/venv"
         && export PATH="$RUNNER_TEMP/venv/bin:$PATH"
         && pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
         && python3 -m unittest discover -s tests -v
+        && ansible-galaxy collection install --no-deps --force .
         && ansible-lint --offline
     permissions:
       contents: write        # release commit, tag, draft release, attached files

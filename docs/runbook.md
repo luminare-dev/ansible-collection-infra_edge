@@ -77,11 +77,11 @@ install on a host, and the failures of its CI and release automation.
 
 | | |
 |---|---|
-| **Meaning** | The aggregate `molecule` job failed: the `molecule-plan` job or at least one `molecule-scenario (<role>, <platform>)` job did not pass. `<platform>` is `debian13` or `ubuntu2404`. |
-| **Impact** | The pull request should not be merged; the role may not converge, may not be idempotent or may fail its checks on Debian 13 or Ubuntu 24.04. |
-| **Diagnosis** | Open the failed `molecule-scenario (<role>, <platform>)` job. The summary at the end of the log names the Molecule action that failed (`converge`, `idempotence`, `verify`); the instance is `ie-<role>-<platform>`. Reproduce it locally in one shell: `cd roles/<role> && export MOLECULE_ROLE=<role>`, then `molecule test --platform-name ie-<role>-<platform> --destroy never`, then `molecule login --host ie-<role>-<platform>`. Every Molecule command needs `MOLECULE_ROLE` set, otherwise the instance names do not match. |
+| **Meaning** | The aggregate `molecule` job failed: the `molecule-plan` job, at least one `molecule-scenario (<role>, <platform>)` job or at least one `molecule-edge (<platform>)` job did not pass. `<platform>` is `debian13` or `ubuntu2404`. |
+| **Impact** | The pull request should not be merged; a role or the edge playbook may not converge, may not be idempotent or may fail its checks on Debian 13 or Ubuntu 24.04. |
+| **Diagnosis** | Open the failed job. The summary at the end of the log names the Molecule action that failed (`converge`, `idempotence`, `verify`). A role job's instance is `ie-<role>-<platform>`; reproduce it locally in one shell: `cd roles/<role> && export MOLECULE_ROLE=<role>`, then `molecule test --platform-name ie-<role>-<platform> --destroy never`, then `molecule login --host ie-<role>-<platform>` (every Molecule command of a role needs `MOLECULE_ROLE` set, otherwise the instance names do not match). An edge job's instance is `ie-edge-<platform>`; from the repository root run `molecule test --scenario-name edge --platform-name ie-edge-<platform> --destroy never`, then `molecule login --scenario-name edge --host ie-edge-<platform>`. A failed probe in its verify step names the source host, the port, the result and the expected result; `nft list ruleset` and `ip netns exec lan ip address` in the instance show the firewall and the addresses of the hosts outside. |
 | **Mitigation** | If the log shows a download or package mirror error, re-run the failed jobs once. |
-| **Fix** | Fix the role or its scenario in the same pull request. Run `molecule destroy` in the same shell (with `MOLECULE_ROLE` still set) afterwards to remove the containers. |
+| **Fix** | Fix the role, the playbook, the example inventory or the scenario in the same pull request. Afterwards remove the containers with `molecule destroy` (in a role's folder with `MOLECULE_ROLE` still set, or `molecule destroy --scenario-name edge` from the repository root). |
 
 ## Scheduled CI run failed without a code change
 

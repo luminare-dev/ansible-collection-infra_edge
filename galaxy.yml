@@ -53,6 +53,9 @@ build_ignore:
   - "*.tar.gz"
   - dist
   - docs/brand
+  # extensions/ holds only the collection's Molecule scenario (the edge playbook); see also
+  # roles/*/molecule below.
+  - extensions
   - release-please-config.json
   - requirements-*.in
   - requirements-*.txt

@@ -14,7 +14,13 @@ Ansible Galaxy (devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix
 collections that devsec.hardening needs, community.crypto and community.mysql); one download
 failed once with a read timeout and passed when the command was run again. On 2026-10-22, for
 the version with the `mariadb` role, the install from a tag (ansible-core 2.21.5, Python 3.14,
-empty collections path) also pulled ansible.mariadb 6.0.2 from Ansible Galaxy.
+empty collections path) also pulled ansible.mariadb 6.0.2 from Ansible Galaxy. Also on
+2026-10-22, for the version with the playbook `luminare.infra_edge.edge`: the install from a test
+tag of a local clone (ansible-core 2.21.5, Python 3.14, empty home directory) contains
+`playbooks/edge.yml` and `examples/edge/`, and `ansible-playbook -i edge/inventory.yml
+luminare.infra_edge.edge --syntax-check` and `--list-hosts` with a copy of the example inventory
+found the playbook by its name and listed `edge-01.example.com`. The playbook itself has not been
+run against a real host; the Molecule scenario `edge` runs it in containers.
 
 ## Requirements
 
@@ -66,13 +72,32 @@ sha256sum -c --ignore-missing SHA256SUMS
 gh attestation verify <archive>.tar.gz --repo luminare-dev/ansible-collection-infra_edge
 ```
 
+## Run the edge playbook
+
+The collection contains a complete example inventory for its playbook in `examples/edge/` (the
+same folder as in the repository). Copy it, put your values into `inventory.yml` and
+`group_vars/edge/main.yml`, create `group_vars/edge/vault.yml` with the three `vault_*` values,
+export the tunnel token and run the playbook by its name (details in the
+[example's README](../examples/edge/README.md)):
+
+```bash
+cp -r ~/.ansible/collections/ansible_collections/luminare/infra_edge/examples/edge edge
+ansible-vault create edge/group_vars/edge/vault.yml
+read -rs TUNNEL_TOKEN && export TUNNEL_TOKEN
+ansible-playbook -i edge/inventory.yml luminare.infra_edge.edge --ask-vault-pass
+```
+
+In your own playbooks, `ansible.builtin.import_playbook: luminare.infra_edge.edge` runs it as
+one step of a longer run.
+
 ## Check that it works
 
 ```bash
 ansible-galaxy collection list luminare.infra_edge
+ansible-playbook -i edge/inventory.yml luminare.infra_edge.edge --list-hosts
 ```
 
-The output names the folder the collection was installed into and its version, for example:
+The first command names the folder the collection was installed into and its version, for example:
 
 ```text
 # /home/user/.ansible/collections/ansible_collections
@@ -80,6 +105,9 @@ Collection          Version
 ------------------- -------
 luminare.infra_edge 0.1.0
 ```
+
+The second one finds the playbook by its name and lists the hosts of the group `edge` in your
+inventory, without connecting to them.
 
 ## Uninstall
 

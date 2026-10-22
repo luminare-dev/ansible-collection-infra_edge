@@ -1,0 +1,49 @@
+# Values for every host in the group "edge" of the example inventory. docs/configuration.md lists
+# all variables of the four roles with their defaults; only what differs from a default is here.
+#
+# Secrets are not in this file:
+# - The tunnel token comes from the environment variable TUNNEL_TOKEN of the control node (the
+#   default of cloudflared_token): read -rs TUNNEL_TOKEN && export TUNNEL_TOKEN
+# - The vault_* values come from group_vars/edge/vault.yml, created encrypted with
+#   ansible-vault create group_vars/edge/vault.yml
+
+# base: two users that log in with their SSH keys only (root never), and the networks that may
+# reach SSH through the firewall. Replace the keys with your own public keys.
+base_admin_ssh_keys:
+  - "ssh-ed25519 AAAA... admin@example.com"
+base_automation_ssh_keys:
+  - "ssh-ed25519 AAAA... ansible@example.com"
+# SHA-512 crypt hash of the admin password (openssl passwd -6), for sudo and the console.
+base_admin_password_hash: "{{ vault_base_admin_password_hash }}"
+base_mgmt_cidrs:
+  - 198.51.100.0/24
+  - 2001:db8:100::/48
+
+# cloudflared: the connector of a remotely managed tunnel, with the token from TUNNEL_TOKEN. The
+# tunnel's public hostname app.example.com points to http://127.0.0.1:8080; that route is set in
+# the Cloudflare dashboard or API, not here.
+
+# nginx: one site per application, on a loopback listener for the connector.
+nginx_sites:
+  - name: app
+    server_name: app.example.com
+    listen: 127.0.0.1:8080
+    upstream: http://127.0.0.1:3000
+
+# mariadb: the database of the application. The application on this host logs in over the socket
+# (host localhost); the application host 192.0.2.13 gets read access over the private network,
+# and port 3306 opens for it alone (/etc/nftables.d/30-mariadb.nft). The server listens on the
+# private address set per host in the inventory (mariadb_bind_address).
+mariadb_allowed_app_hosts:
+  - 192.0.2.13
+mariadb_databases:
+  - name: app
+    user: app
+    host: localhost
+    priv: "app.*:ALL"
+    password: "{{ vault_edge_app_db_password }}"
+  - name: app
+    user: app_reader
+    host: 192.0.2.13
+    priv: "app.*:SELECT"
+    password: "{{ vault_edge_app_reader_db_password }}"

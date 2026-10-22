@@ -1,0 +1,232 @@
+# Checks of the four roles together on one converged instance. The hosts outside are addresses in
+# the network namespace "lan" (prepare.yml); their packets cross the firewall that the base role
+# loaded, with the drop-ins of the other roles. Commands only read state; the requests add lines
+# to the logs.
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars_files:
+    - vars/test.yml
+  vars:
+    edge_test_lan: [ip, netns, exec, lan]
+    # The version that the cloudflared role pins (its defaults file in this repository).
+    edge_test_cloudflared_version: >-
+      {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../../roles/cloudflared/defaults/main.yml')
+          | from_yaml).cloudflared_version }}
+    edge_test_ssh_options: >-
+      -i {{ edge_test_key_file }} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10
+    # TCP connections from the hosts outside to the private address: SSH only from the management
+    # network, the database only from the application host, the nginx site never (loopback only).
+    edge_test_probes:
+      - {source: mgmt, port: 22, expect: open}
+      - {source: other, port: 22, expect: timeout}
+      - {source: app, port: 3306, expect: open}
+      - {source: other, port: 3306, expect: timeout}
+      - {source: mgmt, port: 3306, expect: timeout}
+      - {source: app, port: 8080, expect: timeout}
+  tasks:
+    # The firewall of base with the drop-in of mariadb
+    - name: Read the state of nftables and fail2ban
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      register: edge_test_firewall_units
+      loop: [nftables.service, fail2ban.service]
+
+    - name: Check that base loaded the firewall and started fail2ban
+      ansible.builtin.assert:
+        that:
+          - item.status.ActiveState == 'active'
+          - item.status.UnitFileState == 'enabled'
+        quiet: true
+      loop: "{{ edge_test_firewall_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read the drop-in files
+      ansible.builtin.find:
+        paths: /etc/nftables.d
+        patterns: "*.nft"
+      register: edge_test_dropins
+
+    - name: Read the drop-in of mariadb
+      ansible.builtin.slurp:
+        src: /etc/nftables.d/30-mariadb.nft
+      register: edge_test_mariadb_dropin
+
+    - name: Check the drop-ins (mariadb for the application host, none of nginx without relays)
+      vars:
+        rules: >-
+          {{ (edge_test_mariadb_dropin.content | b64decode).splitlines() | reject('match', '^#') | list }}
+      ansible.builtin.assert:
+        that:
+          - edge_test_dropins.files | map(attribute='path') | list == ['/etc/nftables.d/30-mariadb.nft']
+          - >-
+            rules == ['add rule inet filter input ip saddr { ' ~ edge_test_lan_hosts.app
+            ~ ' } tcp dport 3306 accept comment "mariadb app hosts"']
+
+    - name: Check the whole ruleset with nft (the file of base with every drop-in)
+      ansible.builtin.command: nft --check --file /etc/nftables.conf
+      changed_when: false
+
+    - name: Read the loaded input chain
+      ansible.builtin.command: nft list chain inet filter input
+      register: edge_test_input_chain
+      changed_when: false
+
+    - name: Check the loaded chain (policy drop, DHCPv6 replies, SSH from management, 3306 for the application host)
+      ansible.builtin.assert:
+        that:
+          - edge_test_input_chain.stdout is search('policy drop;')
+          - edge_test_input_chain.stdout is search('ip6 saddr fe80::/10 udp dport 546 accept')
+          - edge_test_input_chain.stdout is search('ip saddr 198\.51\.100\.0/24 tcp dport 22 accept')
+          - edge_test_input_chain.stdout is search('ip6 saddr 2001:db8:100::/48 tcp dport 22 accept')
+          - edge_test_input_chain.stdout is search('ip saddr 192\.0\.2\.13 tcp dport 3306 accept')
+
+    - name: Read the SSH jail of fail2ban
+      ansible.builtin.command: fail2ban-client status sshd
+      register: edge_test_jail
+      changed_when: false
+
+    - name: Check that the jail runs
+      ansible.builtin.assert:
+        that:
+          - edge_test_jail.stdout is search('Currently banned:\s+0')
+
+    # Connections from the hosts outside
+    - name: Probe the private address from the hosts outside
+      ansible.builtin.command:
+        argv: >-
+          {{ edge_test_lan + ['python3', '/usr/local/bin/edge-probe', edge_test_lan_hosts[item.source],
+             edge_test_private_address, item.port | string] }}
+      register: edge_test_probe
+      changed_when: false
+      loop: "{{ edge_test_probes }}"
+      loop_control:
+        label: "{{ item.source }} -> {{ item.port }}"
+
+    - name: Check what the firewall let through
+      ansible.builtin.assert:
+        that:
+          - item.stdout == item.item.expect
+        fail_msg: >-
+          {{ item.item.source }} ({{ edge_test_lan_hosts[item.item.source] }}) to port {{ item.item.port }}:
+          {{ item.stdout }}, expected {{ item.item.expect }}
+        quiet: true
+      loop: "{{ edge_test_probe.results }}"
+      loop_control:
+        label: "{{ item.item.source }} -> {{ item.item.port }}"
+
+    - name: Log in over SSH from the management network as the automation user
+      ansible.builtin.command: >-
+        {{ edge_test_lan | join(' ') }} ssh {{ edge_test_ssh_options }} -b {{ edge_test_lan_hosts.mgmt }}
+        {{ base_automation_user | default('ansible') }}@{{ edge_test_private_address }} id -un
+      register: edge_test_ssh_login
+      changed_when: false
+
+    - name: Log in to the database from the application host with its account
+      ansible.builtin.command:
+        argv: >-
+          {{ edge_test_lan + ['mariadb', '--host=' ~ edge_test_private_address, '--user=' ~ reader.user,
+             '--batch', '--skip-column-names', '--execute', 'SELECT CURRENT_USER()'] }}
+      environment:
+        MYSQL_PWD: "{{ reader.password }}"
+      vars:
+        reader: "{{ mariadb_databases | selectattr('host', 'equalto', edge_test_lan_hosts.app) | first }}"
+      register: edge_test_reader_login
+      changed_when: false
+      no_log: true
+
+    - name: Check both logins
+      ansible.builtin.assert:
+        that:
+          - edge_test_ssh_login.stdout == 'ansible'
+          - edge_test_reader_login.stdout == 'app_reader@' ~ edge_test_lan_hosts.app
+
+    # Listeners of the composed host
+    - name: Read the listening sockets
+      ansible.builtin.command: ss --listening --numeric --processes --no-header --tcp --udp
+      register: edge_test_sockets
+      changed_when: false
+
+    - name: Check that only SSH and the database listen outside the loopback interface
+      vars:
+        sockets: "{{ edge_test_sockets.stdout_lines | map('split') | list }}"
+        outside: >-
+          {{ sockets | rejectattr(4, 'match', '^(127\.[0-9.]+|\[::1\]|\[::ffff:127\.[0-9.]+\]):') | list }}
+        nginx: "{{ edge_test_sockets.stdout_lines | select('search', '\"nginx\"') | map('split') | list }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            outside | selectattr(0, 'equalto', 'tcp') | map(attribute=4) | sort
+            == ['0.0.0.0:22', edge_test_private_address ~ ':3306', '[::]:22']
+          - outside | selectattr(0, 'equalto', 'udp') | list | length == 0
+          - nginx | map(attribute=4) | unique | list == ['127.0.0.1:8080']
+        fail_msg: "{{ edge_test_sockets.stdout_lines }}"
+
+    # A request as the tunnel connector sends it: nginx, the application and its database
+    - name: Send a request with the connector's headers to the site of the example
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, urllib.request
+            request = urllib.request.Request("http://127.0.0.1:8080/db", headers={
+                "Host": "app.example.com", "CF-Connecting-IP": "203.0.113.7"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                print(json.dumps({"status": response.status, "body": json.loads(response.read())}))
+      register: edge_test_request
+      changed_when: false
+
+    - name: Read the last line of the nginx access log
+      ansible.builtin.command: tail -n 1 /var/log/nginx/access.log
+      register: edge_test_access_log
+      changed_when: false
+
+    - name: Check that the application got the visitor's address and its database over the socket
+      vars:
+        answer: "{{ edge_test_request.stdout | from_json }}"
+        logged: "{{ edge_test_access_log.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - answer.status == 200
+          - answer.body.current_user == 'app@localhost'
+          - answer.body.database == 'app'
+          - answer.body.x_real_ip == '203.0.113.7'
+          - answer.body.host == 'app.example.com'
+          - logged.remote_addr == '203.0.113.7'
+          - logged.path == '/db'
+          - logged.upstream_addr == '127.0.0.1:3000'
+
+    # The tunnel connector
+    - name: Read the cloudflared version
+      ansible.builtin.command: cloudflared --version
+      register: edge_test_cloudflared_binary
+      changed_when: false
+
+    - name: Read the state of the connector
+      ansible.builtin.systemd_service:
+        name: cloudflared.service
+      register: edge_test_cloudflared
+
+    - name: Read the listeners in the network namespace of the connector
+      ansible.builtin.command: >-
+        nsenter --target {{ edge_test_cloudflared.status.MainPID }} --net ss --tcp --listening --numeric --no-header
+      register: edge_test_cloudflared_listeners
+      changed_when: false
+      until: edge_test_cloudflared_listeners.stdout_lines | length > 0
+      retries: 15
+      delay: 2
+
+    - name: Check the connector (pinned version, its own user, token file, metrics on loopback only)
+      ansible.builtin.assert:
+        that:
+          - edge_test_cloudflared_binary.stdout.startswith('cloudflared version ' ~ edge_test_cloudflared_version ~ ' ')
+          - edge_test_cloudflared.status.ActiveState == 'active'
+          - edge_test_cloudflared.status.UnitFileState == 'enabled'
+          - edge_test_cloudflared.status.User == 'cloudflared'
+          - edge_test_cloudflared.status.ExecStart is search('--token-file /etc/cloudflared/token')
+          - >-
+            edge_test_cloudflared_listeners.stdout_lines | map('split') | map(attribute=3) | list
+            == ['127.0.0.1:2000']

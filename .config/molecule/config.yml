@@ -10,6 +10,10 @@
 # roles can run at the same time on one Docker daemon. CI runs one job per role and platform
 # suffix (debian13, ubuntu2404; tests/test_collection.py keeps the ci.yml matrix equal to the
 # platforms below) and sets MOLECULE_ROLE in each.
+#
+# The collection scenario extensions/molecule/edge (the edge playbook, docs/adr/0017) also uses
+# this file; it runs from the repository root (molecule test --scenario-name edge) and repeats the
+# two platforms under its own names, because a scenario's platform list replaces this one.
 dependency:
   name: galaxy
 driver:

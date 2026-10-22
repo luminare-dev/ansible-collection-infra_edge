@@ -35,6 +35,42 @@ ansible-galaxy collection list luminare.infra_edge
 ansible-config dump | grep COLLECTIONS_PATHS
 ```
 
+## The playbook luminare.infra_edge.edge could not be found
+
+```text
+[ERROR]: the playbook: luminare.infra_edge.edge could not be found
+```
+
+**Cause:** the collection is not installed in a path that `ansible-playbook` searches (see the
+previous entry), or an older version without the playbook is installed there.
+
+**Fix:** check the version with `ansible-galaxy collection list luminare.infra_edge`, and install
+the collection again in the environment that runs the playbook.
+
+## The edge playbook stops with "'vault_edge_app_db_password' is undefined"
+
+**Cause:** the example inventory takes the admin password hash and the two database passwords
+from `group_vars/edge/vault.yml`, and that file does not exist, misses the value, or was not
+decrypted (no `--ask-vault-pass` or vault password file).
+
+**Fix:** create the file with `ansible-vault create group_vars/edge/vault.yml` next to
+`main.yml`, with `vault_base_admin_password_hash`, `vault_edge_app_db_password` and
+`vault_edge_app_reader_db_password` (see the [example's README](../examples/edge/README.md)), and
+run the playbook with `--ask-vault-pass`.
+
+## The second run of the edge playbook cannot log in as root
+
+```text
+root@203.0.113.10: Permission denied (publickey).
+```
+
+**Cause:** the first run logged in as root, and the base role then refused SSH logins as root
+(`PermitRootLogin no`). This is intended.
+
+**Fix:** set `ansible_user: ansible` (the automation user, `base_automation_user`) for the host in
+the inventory; it logs in with one of the keys in `base_automation_ssh_keys` and uses sudo without
+a password.
+
 ## The base role stops with "Set base_admin_ssh_keys and base_automation_ssh_keys"
 
 **Cause:** one of the two key lists is empty, or both users have the same name. The SSH server
@@ -68,7 +104,9 @@ would end up in `/etc/hosts` or make `hostnamectl` fail.
 **Cause:** `cloudflared_token` is empty (by default it is read from the environment variable
 `TUNNEL_TOKEN` of the control node, and that variable is not set in the shell that runs
 `ansible-playbook`), or the value is not a tunnel token. A tunnel token is base64-encoded JSON and
-starts with `eyJ`; the tunnel ID or an API token does not work.
+starts with `eyJ`; the tunnel ID or an API token does not work. The edge playbook also stops here
+when it runs with `--tags` for another role, because the input checks of all four roles run with
+every tag; leave roles out with `--skip-tags` instead, or export the token.
 
 **Fix:** copy the token of the remotely managed tunnel from the Cloudflare dashboard (it is part
 of the install command shown for the tunnel) and export it without echo in the same shell:

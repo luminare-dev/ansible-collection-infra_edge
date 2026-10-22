@@ -1,0 +1,7 @@
+# Collections the edge scenario needs (installed by the dependency step). devsec.hardening comes
+# from Ansible Galaxy with the same version range as in galaxy.yml; the other collections of the
+# roles (ansible.mariadb, ansible.posix, community.general) are already installed from the
+# hash-pinned "ansible" package in requirements-test.txt.
+collections:
+  - name: devsec.hardening
+    version: ">=11.0.0,<12.0.0"
