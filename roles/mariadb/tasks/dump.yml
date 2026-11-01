@@ -1,4 +1,4 @@
-# Nightly logical dumps on the host (docs/adr/0016): a script, a sandboxed oneshot service that
+# Nightly logical dumps on the host: a script, a sandboxed oneshot service that
 # runs it as root (unix_socket login, no password file) and a timer. The files are always
 # written, so the service can also be started by hand; mariadb_dump_enabled switches the timer.
 

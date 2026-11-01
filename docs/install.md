@@ -3,29 +3,6 @@
 The collection is installed from this repository: from a release tag with git, or from the
 collection tarball attached to the GitHub release.
 
-What was tested, on 2026-10-21 with ansible-core 2.21.5 and Python 3.12 in an `ubuntu:24.04`
-container, before any release existed: the install from a tag with git and the install from
-`requirements.yml`, both against a local clone of the repository with a test tag `v0.1.0` (a
-`file://` URL in place of the GitHub URL), and `ansible-galaxy collection install` of a tarball
-built locally with `ansible-galaxy collection build`. `gh release download`, `sha256sum -c` and
-`gh attestation verify` were not run then, because no release existed yet. Repeated the
-same day for the version with the `base` role: both installs also pulled the dependencies from
-Ansible Galaxy (devsec.hardening 11.0.0, community.general 13.5.0, ansible.posix 2.2.2 and the
-collections that devsec.hardening needs, community.crypto and community.mysql); one download
-failed once with a read timeout and passed when the command was run again. On 2026-10-22, for
-the version with the `mariadb` role, the install from a tag (ansible-core 2.21.5, Python 3.14,
-empty collections path) also pulled ansible.mariadb 6.0.2 from Ansible Galaxy. Also on
-2026-10-22, for the version with the playbook `luminare.infra_edge.edge`: the install from a test
-tag of a local clone (ansible-core 2.21.5, Python 3.14, empty home directory) contains
-`playbooks/edge.yml` and `examples/edge/`, and `ansible-playbook -i edge/inventory.yml
-luminare.infra_edge.edge --syntax-check` and `--list-hosts` with a copy of the example inventory
-found the playbook by its name and listed `edge-01.example.com`. The playbook itself has not been
-run against a real host; the Molecule scenario `edge` runs it in containers. After the releases
-v0.1.0 and v0.2.0 were published on 2026-10-22, `gh release download`, `sha256sum -c SHA256SUMS`
-(both archives OK) and `gh attestation verify` (one SLSA provenance attestation per archive)
-passed for both releases, and the install from the tag `v0.2.0` with git (ansible-core 2.21.5)
-contained the five roles.
-
 ## Requirements
 
 | Requirement | Version | Notes |

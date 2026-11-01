@@ -1,7 +1,5 @@
-# Caller: lint, tests and the full-history secret scan on every pull request and push to main;
-# the Molecule scenarios of the roles and of the edge playbook on pull requests, on demand and
-# once a week.
-# Required checks for the main ruleset: "ci / lint-test" and "secrets / gitleaks".
+# Lint, tests and the secret scan on every pull request and push to main; Molecule on pull
+# requests, on demand and weekly. Required checks: "ci / lint-test" and "secrets / gitleaks".
 name: ci
 
 on:
@@ -24,12 +22,8 @@ jobs:
   ci:
     uses: ./.github/workflows/reusable-ci.yml
     with:
-      # After the template checks: the unit tests (including the collection build test) and
-      # ansible-lint (production profile, see .ansible-lint) with the hash-pinned test tools.
-      # --offline: ansible-lint does not install the galaxy.yml dependencies from Ansible Galaxy,
-      # so this required check does not depend on Galaxy (docs/adr/0008). It does not install
-      # this collection either, so the checkout is installed first without its dependencies:
-      # the syntax check resolves luminare.infra_edge.* in the edge playbook and its scenario.
+      # Unit tests and ansible-lint --offline (no Galaxy downloads); the checkout is installed
+      # first without dependencies so the edge playbook resolves luminare.infra_edge.*.
       test-command: >-
         pip install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
         && python3 -m unittest discover -s tests -v
