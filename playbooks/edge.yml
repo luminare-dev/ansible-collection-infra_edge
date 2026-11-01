@@ -1,22 +1,6 @@
-# luminare.infra_edge.edge: one edge host from the roles of this collection.
-#
-#   ansible-playbook -i inventory.yml luminare.infra_edge.edge
-#
-# The roles run in this order, each on top of the one before:
-#   1. base           users with SSH keys only, unattended security upgrades, journal limits,
-#                     fail2ban and the nftables firewall (input policy drop) with the drop-in folder
-#                     /etc/nftables.d for the other roles
-#   2. cloudflared    the connector of a remotely managed tunnel: an outbound connection, no open port
-#   3. nginx          the sites that the tunnel forwards to, on loopback listeners only
-#   4. mariadb        the database on 127.0.0.1 or a private address, nightly dumps; port 3306 for
-#                     application hosts goes into /etc/nftables.d/30-mariadb.nft
-#   5. restic_backup  only when edge_restic_backup_enabled is true: nightly restic backups of /etc
-#                     and /var/backups (with the dumps of mariadb) to a repository off the host
-# Every value comes from the inventory: examples/edge/ in the repository is a complete example,
-# docs/configuration.md lists the variables. The play runs on the group "edge", or on the host
-# pattern in edge_hosts (for example -e edge_hosts=web); --limit narrows either. Each role's tasks
-# carry the role name as a tag, so --skip-tags leaves roles out (for example --skip-tags mariadb).
-# With --tags, the input checks of all roles that run still run (tag always).
+# luminare.infra_edge.edge: one edge host with base, cloudflared, nginx, mariadb and, when
+# edge_restic_backup_enabled is true, restic_backup. Hosts: group "edge" or -e edge_hosts=<pattern>.
+# Every value comes from the inventory; see examples/edge/ and docs/configuration.md.
 - name: Set up the edge host
   hosts: "{{ edge_hosts | default('edge') }}"
   become: true

@@ -1,4 +1,4 @@
-# Relay ports in the firewall layout of the base role (docs/adr/0009). Sites listen on loopback
+# Relay ports in the firewall layout of the base role. Sites listen on loopback
 # addresses only, so without a relay no port needs to be opened and the drop-in is removed.
 # nginx_firewall_write (assert.yml): /etc/nftables.d exists or nginx_firewall_manage is true;
 # otherwise the role leaves the firewall alone (no base firewall on this host).

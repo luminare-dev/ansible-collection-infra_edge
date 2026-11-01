@@ -1,7 +1,6 @@
 # Runbook
 
-The collection runs nothing by itself. This page covers the services and timers that its roles
-install on a host, and the failures of its CI and release automation.
+What to do when one of the services or timers that the roles install fails on a host.
 
 ## SSH login refused after the base role ran
 
@@ -65,15 +64,11 @@ install on a host, and the failures of its CI and release automation.
 
 ## Backup recovery objectives
 
-With the defaults of `luminare.infra_edge.restic_backup`, the recovery point objective is about
-24 hours: one snapshot a night at 03:45 (host time), after the database dumps of 03:15, and a run
-missed while the host was off follows at the next boot. The restore test and an alert on
-`restic_backup_last_success_timestamp_seconds` treat a newest snapshot older than 26 hours
-(`restic_backup_max_age_hours`) as a failure. The recovery time objective is not measured against
-a real backend yet: in the Molecule containers, `restic-restore-test` restored the newest snapshot
-(139 and 168 files, about 0.5 MB, from a local repository) in 0.8 seconds. With a real backend it
-depends on the amount of data and the bandwidth, so run `restic-restore-test` on the host after
-the first nights and note the time it prints.
+With the defaults of `luminare.infra_edge.restic_backup` you lose at most about a day: one
+snapshot a night at 03:45, after the database dumps at 03:15. The restore test and the metric
+`restic_backup_last_success_timestamp_seconds` treat a snapshot older than 26 hours as a failure.
+Run `restic-restore-test` on the host after the first nights; the time it prints is roughly how
+long a restore takes with your backend.
 
 ## Nightly backup failed
 
@@ -114,43 +109,3 @@ the first nights and note the time it prints.
 | **Diagnosis** | `systemctl list-timers 'apt-daily*'` shows the daily timers; `/var/log/unattended-upgrades/unattended-upgrades.log` shows the last run; `apt-config dump Unattended-Upgrade::Origins-Pattern APT::Periodic` shows the allowed origins and whether the daily run is on. A held package or a dpkg error stops the run. |
 | **Mitigation** | Run `unattended-upgrade -d` once and read its output; install an urgent update by hand with `apt-get install --only-upgrade <package>`. |
 | **Fix** | Remove the cause (held package, broken dpkg state) and check that `base_unattended_upgrades_enabled` is true. If `/var/run/reboot-required` exists, reboot in a maintenance window or set `base_unattended_reboot`. |
-
-## Check failed: molecule
-
-| | |
-|---|---|
-| **Meaning** | The aggregate `molecule` job failed: the `molecule-plan` job, at least one `molecule-scenario (<role>, <platform>)` job or at least one `molecule-edge (<platform>)` job did not pass. `<platform>` is `debian13` or `ubuntu2404`. |
-| **Impact** | The pull request should not be merged; a role or the edge playbook may not converge, may not be idempotent or may fail its checks on Debian 13 or Ubuntu 24.04. |
-| **Diagnosis** | Open the failed job. The summary at the end of the log names the Molecule action that failed (`converge`, `idempotence`, `verify`). A role job's instance is `ie-<role>-<platform>`; reproduce it locally in one shell: `cd roles/<role> && export MOLECULE_ROLE=<role>`, then `molecule test --platform-name ie-<role>-<platform> --destroy never`, then `molecule login --host ie-<role>-<platform>` (every Molecule command of a role needs `MOLECULE_ROLE` set, otherwise the instance names do not match). An edge job's instance is `ie-edge-<platform>`; from the repository root run `molecule test --scenario-name edge --platform-name ie-edge-<platform> --destroy never`, then `molecule login --scenario-name edge --host ie-edge-<platform>`. A failed probe in its verify step names the source host, the port, the result and the expected result; `nft list ruleset` and `ip netns exec lan ip address` in the instance show the firewall and the addresses of the hosts outside. |
-| **Mitigation** | If the log shows a download or package mirror error, re-run the failed jobs once. |
-| **Fix** | Fix the role, the playbook, the example inventory or the scenario in the same pull request. Afterwards remove the containers with `molecule destroy` (in a role's folder with `MOLECULE_ROLE` still set, or `molecule destroy --scenario-name edge` from the repository root). |
-
-## Scheduled CI run failed without a code change
-
-| | |
-|---|---|
-| **Meaning** | The weekly `ci` run (Tuesdays 03:41 UTC) failed although `main` did not change. |
-| **Impact** | None for users yet; a role no longer converges or is no longer idempotent with the current Debian or Ubuntu packages, or a lint or tool update changed a result. |
-| **Diagnosis** | Compare the failing job with the last passing run of the same job: look for package versions in the converge output and for a recently merged Dependabot pull request (base image digests, Python tools). |
-| **Mitigation** | Open an issue with the failing job link, so that pull requests are not blamed for the failure. |
-| **Fix** | Adapt the role to the new package version, or pin the package in the role with a comment and a follow-up issue. |
-
-## Release build failed: galaxy.yml has a different version than the tag
-
-| | |
-|---|---|
-| **Meaning** | The `build` job of the release stopped with `galaxy.yml has version …, the tag is v…`: the release pull request did not update `galaxy.yml`. |
-| **Impact** | The GitHub release stays a draft without files, so nothing reaches users. |
-| **Diagnosis** | `git show vX.Y.Z:galaxy.yml \| grep '^version'` shows the old version. Check that the `version:` line still ends with `# x-release-please-version` and that `release-please-config.json` lists `galaxy.yml` under `extra-files`. |
-| **Mitigation** | None needed; the previous release stays the latest one. |
-| **Fix** | Restore the annotation or the `extra-files` entry in a pull request with a `fix:` title, delete the empty draft release, and let release-please prepare the next version. |
-
-## The release pull request shows no checks
-
-| | |
-|---|---|
-| **Meaning** | release-please opens its pull request with the workflow token, and such pull requests do not start workflows. |
-| **Impact** | The required checks never report, so the pull request cannot be merged. |
-| **Diagnosis** | The pull request `chore(main): release X.Y.Z` has no `ci / lint-test` check. |
-| **Mitigation** | Close the pull request and reopen it once; the checks then run. |
-| **Fix** | None; this is how GitHub treats the workflow token (see [ADR 0004](adr/0004-draft-releases-with-checksums-and-provenance.md)). |

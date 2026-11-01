@@ -1,21 +1,15 @@
 # Configuration
 
-Each role of the collection is configured through its own variables. Every variable starts with
-the role name (for example `<role>_enabled`), has its default in `roles/<role>/defaults/main.yml`
-and is described, with its type, in `roles/<role>/meta/argument_specs.yml`, which Ansible checks
-when the role starts. Each role gets a section on this page with a table of its options (variable,
-type, default, description), generated from that file with `python3 tests/role_docs.py --write`;
-a unit test fails when a table here or in a role README is out of date.
+Every variable starts with its role name, has its default in `roles/<role>/defaults/main.yml`
+and is described in `roles/<role>/meta/argument_specs.yml`, which Ansible checks when the role
+starts. The tables below are generated from that file (`python3 tests/role_docs.py --write`).
 
 ## Playbook luminare.infra_edge.edge
 
-[`luminare.infra_edge.edge`](../playbooks/edge.yml) runs the roles below in this order:
-`base`, `cloudflared`, `nginx`, `mariadb` and, when switched on, `restic_backup`. Its own
-variables are the host pattern and the switch for the backups; it passes nothing to the roles:
-every value comes from the inventory, as role variables. [`examples/edge/`](../examples/edge/) is
-a complete inventory for one host, with the backups switched on (tested by the Molecule scenario
-`edge`); a unit test fails when it sets a variable that neither the playbook nor one of its roles
-has.
+[`luminare.infra_edge.edge`](../playbooks/edge.yml) runs `base`, `cloudflared`, `nginx`,
+`mariadb` and, when switched on, `restic_backup`. It passes nothing to the roles: every value
+comes from the inventory. [`examples/edge/`](../examples/edge/) is a complete inventory for one
+host.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -196,8 +190,6 @@ stops before it writes them, so the settings files of a working backup stay as t
 
 ## Secrets
 
-Secrets never go into this repository, an issue or a log. A role takes a secret only as a
-variable (from Ansible Vault, a SOPS-encrypted vars file or an environment lookup in your own
-inventory), never as a default value, and every task that handles a secret sets `no_log: true`.
-CI scans every commit with gitleaks; a leaked secret is rotated first and removed from history
-second.
+Pass secrets as variables from Ansible Vault, a SOPS-encrypted vars file or an environment
+lookup; no role has a secret as its default, and every task that handles one sets
+`no_log: true`.

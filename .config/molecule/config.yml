@@ -1,19 +1,7 @@
-# Shared Molecule configuration for every role scenario (roles/<role>/molecule/default/).
-# Molecule reads this file from the repository root and merges the scenario's molecule.yml on
-# top of it, so a scenario only adds what is special to its role (docs/adr/0006).
-#
-# Run one role locally (Docker with systemd containers, Python venv from requirements-test.txt):
-#   cd roles/<role> && export MOLECULE_ROLE=<role>
-#   molecule test                                    # both platforms in one run
-#   molecule test --platform-name ie-<role>-debian13 # one platform, as one CI matrix job does
-# MOLECULE_ROLE goes into the instance names (ie-<role>-debian13, ie-<role>-ubuntu2404), so two
-# roles can run at the same time on one Docker daemon. CI runs one job per role and platform
-# suffix (debian13, ubuntu2404; tests/test_collection.py keeps the ci.yml matrix equal to the
-# platforms below) and sets MOLECULE_ROLE in each.
-#
-# The collection scenario extensions/molecule/edge (the edge playbook, docs/adr/0017) also uses
-# this file; it runs from the repository root (molecule test --scenario-name edge) and repeats the
-# two platforms under its own names, because a scenario's platform list replaces this one.
+# Shared Molecule configuration; each scenario's molecule.yml is merged on top of it.
+#   cd roles/<role> && export MOLECULE_ROLE=<role> && molecule test [--platform-name ie-<role>-debian13]
+# MOLECULE_ROLE goes into the instance names, so several roles can run on one Docker daemon.
+# tests/test_collection.py keeps the ci.yml matrix equal to the platforms below.
 dependency:
   name: galaxy
 driver:

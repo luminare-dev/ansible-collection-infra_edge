@@ -1,8 +1,8 @@
 # What mysql_secure_installation does, without a root password: root@localhost keeps the
 # packages' unix_socket login (only the operating system's root user gets in, over the socket),
 # anonymous accounts and the test database with its privileges are removed, and root may log in
-# from localhost only. The ansible.mariadb modules connect as root over the socket
-# (docs/adr/0015); config_file "" keeps a ~/.my.cnf of the remote user out of it.
+# from localhost only. The ansible.mariadb modules connect as root over the socket;
+# config_file "" keeps a ~/.my.cnf of the remote user out of it.
 
 - name: Remove the anonymous accounts
   ansible.mariadb.mariadb_user:

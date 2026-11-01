@@ -1,25 +1,18 @@
 # luminare.infra_edge.cloudflared
 
-Connector for a remotely managed Cloudflare Tunnel on a Debian 13 or Ubuntu 24.04 edge host: a
-pinned cloudflared version, installed from its package file after a SHA-256 check and held with
-an apt pin; the tunnel token in a file that only the service user can read; and a sandboxed
-systemd service that reads the token from that file and keeps its metrics listener on the
-loopback address. The host needs no open inbound port: the connector only opens outbound
-connections to Cloudflare's edge (port 7844, QUIC over UDP or HTTP/2 over TCP), which the
-[`base`](../base/README.md) firewall allows (its output policy is accept).
+Connector for a remotely managed Cloudflare Tunnel on a Debian 13 or Ubuntu 24.04 host: a pinned
+cloudflared version installed from its package file after a SHA-256 check and held with an apt
+pin, the tunnel token in a file only the service user can read, and a sandboxed systemd service.
+The host needs no open inbound port; the connector only connects out to Cloudflare on port 7844.
 
 ## Requirements
 
-- Managed host: Debian 13 or Ubuntu 24.04 on x86_64 or aarch64 (only x86_64 is tested), with
-  systemd and Python 3, reached as root or with `become: true`. The role stops before any change
-  on another distribution or architecture.
-- Outbound HTTPS to `pkg.cloudflare.com` (package file and apt repository) and outbound port 7844
-  (UDP and TCP) to Cloudflare's edge.
-- A remotely managed tunnel and its token. The token is part of the install command that the
-  Cloudflare dashboard shows for the tunnel, and the API returns it
-  (`GET /accounts/<account_id>/cfd_tunnel/<tunnel_id>/token`). Public hostnames and their
-  services are configured on the tunnel in Cloudflare, not on the host.
-- Control node: ansible-core 2.20 or later. The role uses only `ansible.builtin` modules.
+- Debian 13 or Ubuntu 24.04 on x86_64 or aarch64 (only x86_64 is tested), reached as root or with
+  `become: true`.
+- Outbound HTTPS to `pkg.cloudflare.com` and outbound port 7844 (UDP and TCP).
+- A remotely managed tunnel and its token (from the install command in the Cloudflare dashboard,
+  or `GET /accounts/<account_id>/cfd_tunnel/<tunnel_id>/token`). Public hostnames are configured
+  in Cloudflare, not on the host.
 
 ## Example playbook
 
@@ -31,35 +24,28 @@ connections to Cloudflare's edge (port 7844, QUIC over UDP or HTTP/2 over TCP), 
     - role: luminare.infra_edge.cloudflared
 ```
 
-The token comes from the environment of the control node by default. Read it without echo, so
-that it does not end up in the shell history:
+By default the token is read from `TUNNEL_TOKEN` on the control node:
 
 ```bash
 read -rs TUNNEL_TOKEN && export TUNNEL_TOKEN
 ansible-playbook -i inventory.yml edge.yml
 ```
 
-To keep it in the inventory instead, set `cloudflared_token: "{{ vault_cloudflared_token }}"`
-with the value in Ansible Vault or a SOPS-encrypted file.
+Or set `cloudflared_token: "{{ vault_cloudflared_token }}"` from Ansible Vault or SOPS.
 
-## What the role does
+## What it sets up
 
-| Control | How | Checked in Molecule |
-|---|---|---|
-| Known version, checked file | `cloudflared_version` (2026.10.2) is installed from `cloudflared_<version>_<arch>.deb` in the pool of Cloudflare's repository after `get_url` checked its SHA-256 against `cloudflared_deb_sha256`; the download directory is removed afterwards. A newer installed version is replaced. | `cloudflared --version`; no package file left |
-| apt pin | `/etc/apt/preferences.d/cloudflared` pins the version with priority 1001; the signed repository is an apt source (`/etc/apt/sources.list.d/cloudflared.list`, key `/usr/share/keyrings/cloudflare-main.gpg`) | `apt-cache policy` shows the pinned version as installed and as candidate while the index offers a newer one; the `apt` module in check mode would not upgrade it |
-| No self-updates | `--no-autoupdate`; the self-update service and timer of `cloudflared service install` are stopped and removed | `prepare.yml` installs and starts them; after the converge they are gone |
-| Token only in a file | `/etc/cloudflared/token`, mode 0600, owner `cloudflared`, in `/etc/cloudflared` (`root:cloudflared`, 0750); the unit passes `--token-file`; the task that writes it has `no_log` and no diff, and the variable is `no_log` in the argument spec | owner, mode and content; `systemctl cat`, `systemctl show`, the process command line and the journal contain no token; the journal shows the tunnel ID of the test token, so the service user read and parsed the file |
-| Takeover of `cloudflared service install` | the role's unit replaces `/etc/systemd/system/cloudflared.service`, the file that installer writes (releases before 2026.7.2 put the token on its command line) | `prepare.yml` writes such a unit; afterwards neither its token nor `--token` appears |
-| Own service user | system user and group `cloudflared`, home `/nonexistent`, shell `/usr/sbin/nologin` | `getent passwd` |
-| Sandbox | `NoNewPrivileges`, no capabilities, `ProtectSystem=strict`, `ProtectHome`, private `/tmp` and `/dev`, kernel, clock, host name and control group protection, `ProtectProc=invisible`, `MemoryDenyWriteExecute`, `RestrictNamespaces`, address families `AF_INET AF_INET6 AF_UNIX AF_NETLINK`, system call filter `@system-service` without `@privileged @resources` | unit content, `systemd-analyze verify`; `systemd-analyze security` rates the unit file 1.3 ("OK", 0 is best, 10 worst) and the scenario fails above 1.5; the service runs in it as `cloudflared` without a restart |
-| Metrics on one address | `--metrics 127.0.0.1:2000` (`cloudflared_metrics_address`); the role refuses `0.0.0.0` and `[::]` | the only TCP listener of the service is `127.0.0.1:2000`; `/metrics` answers with the version, `/ready` with 503 and no connections |
-| Start waits for the tunnel | `Type=notify`: systemd waits up to 30 seconds for the first connection to the edge, so a wrong token or a blocked port fails the start or restart; `Restart=on-failure` | not checked: Molecule has no tunnel (see [Testing](#testing)) |
+- `cloudflared_version` (2026.10.2) from the pool of Cloudflare's repository, checked against
+  `cloudflared_deb_sha256` and pinned in `/etc/apt/preferences.d/cloudflared`; `--no-autoupdate`.
+- `/etc/cloudflared/token` (0600, owner `cloudflared`), passed with `--token-file`; it never
+  appears on a command line, in the unit or in Ansible output.
+- A sandboxed unit running as the system user `cloudflared`, with `Type=notify` (the start waits
+  up to 30 seconds for the first connection).
+- Metrics on `127.0.0.1:2000` only: `/metrics` and `/ready` (200 when connected).
+- Takes over a connector set up with `cloudflared service install` and removes its self-update
+  units.
 
 ## Variables
-
-The table is generated from [`meta/argument_specs.yml`](meta/argument_specs.yml), which Ansible
-also uses to check the variables when the role starts.
 
 <!-- argument-specs:cloudflared:begin -->
 | Variable | Type | Default | Description |
@@ -78,71 +64,35 @@ also uses to check the variables when the role starts.
 
 ## Tags
 
-`cloudflared` (every task) and one tag per part: `cloudflared_package`, `cloudflared_token`,
-`cloudflared_service`. The checks at the start always run.
-
-## Metrics and health
-
-The listener at `cloudflared_metrics_address` serves `/metrics` (Prometheus format, for example
-`cloudflared_tunnel_ha_connections`) and `/ready`, which answers 200 when the connector has at
-least one connection to the edge and 503 otherwise:
-
-```bash
-curl -s http://127.0.0.1:2000/ready
-```
+`cloudflared`, `cloudflared_package`, `cloudflared_token`, `cloudflared_service`. The input
+checks always run.
 
 ## Upgrading cloudflared
 
 Dependabot cannot see the version, so it is bumped by hand:
 
-1. Pick a release on <https://github.com/cloudflare/cloudflared/releases> and read its entry in
-   `RELEASE_NOTES`. Skip releases marked "Do not use" (2026.8.0 and 2026.8.1 are).
+1. Pick a release on <https://github.com/cloudflare/cloudflared/releases> and skip any marked
+   "Do not use".
 2. Copy the SHA-256 values of `cloudflared-linux-amd64.deb` and `cloudflared-linux-arm64.deb`
-   from the release's checksum list. These are the files in the repository's pool (checked for
-   2026.10.2 on 2026-10-21).
-3. Set `cloudflared_version` and `cloudflared_deb_sha256` in the inventory and run the play on
-   one host first. The role updates the pin, downloads and checks the new file, installs it and
-   restarts the connector, which waits until the tunnel is connected again.
+   from the release's checksum list.
+3. Set `cloudflared_version` and `cloudflared_deb_sha256` and run the play on one host first.
 
-To go back, set the previous version and its checksums; the role installs older versions too.
-The restart interrupts the tunnel for a few seconds unless a second connector of the same tunnel
-runs on another host.
+Going back works the same way with the old version and checksums. The restart interrupts the
+tunnel for a few seconds unless a second connector runs on another host.
 
 ## Testing
-
-`molecule/default` converges the role on Debian 13 and Ubuntu 24.04 (systemd containers), runs
-it a second time and expects `changed=0`, then checks the controls in the table above.
-`prepare.yml` sets up what `cloudflared service install` leaves on a host (a unit with a token
-on its command line and the self-update timer), so the converge has to take it over. The
-connector then really starts, with a synthetic token that belongs to no account, under a
-Molecule-only drop-in: `PrivateNetwork=yes` gives it a network namespace with only a loopback
-interface, and `Type=simple` replaces `Type=notify`, because without a connection cloudflared
-never reports readiness. `converge.yml` adds `--edge 127.0.0.1:7844` through
-`cloudflared_extra_args`, so cloudflared keeps retrying a loopback address instead of looking up
-Cloudflare's edge and exiting. The only traffic to Cloudflare is the download of the package
-file, the key and the apt index from `pkg.cloudflare.com`.
 
 ```bash
 cd roles/cloudflared && export MOLECULE_ROLE=cloudflared && molecule test
 ```
 
+The scenario starts the connector with a synthetic token in a network namespace without access
+to Cloudflare.
+
 ## Limitations
 
-- No real tunnel has been connected: there is no tunnel token for tests, and the scenario must
-  not reach Cloudflare. Still to be checked on a virtual machine with a tunnel: the dashboard
-  shows the connector as healthy with four connections, `/ready` answers 200, a public hostname
-  of the tunnel answers, the `Type=notify` start waits for the connection (and fails within 30
-  seconds with a wrong token), and `ss -tlnp` shows no listener except `127.0.0.1:2000`.
-- Only x86_64 is tested. The arm64 checksum was compared with the file in the repository's pool,
-  but that file was not installed.
-- Cloudflare's repository index lists only the newest version, so the role downloads the
-  pinned version from the pool. If Cloudflare stops serving old files there, the install of a
-  host fails until the version is bumped ([ADR 0011](../../docs/adr/0011-pinned-cloudflared-package-file-with-checksum.md)).
-- When Cloudflare replaces its signing key, `apt-get update` reports an error for this source
-  until the role runs again and fetches the new key. `cloudflared_apt_repository_enabled: false`
-  installs without the apt source.
-- cloudflared still reads a `config.yml` from `/etc/cloudflared` or `/usr/local/etc/cloudflared`
-  if one exists, for example from an earlier locally managed tunnel; options on the command line
-  win over it. The role does not remove such a file.
-- Only the tunnel connector is in scope: public hostnames, Access policies and the tunnel itself
-  are configured in Cloudflare. Routing private networks through the tunnel (WARP) is not tested.
+- Not tested with a real tunnel yet.
+- Cloudflare's apt index only lists the newest version, so the role downloads the pinned one from
+  the pool. If Cloudflare removes old files there, installs fail until the version is bumped.
+- A `config.yml` in `/etc/cloudflared` from an earlier locally managed tunnel is still read
+  (command-line options win); the role does not remove it.

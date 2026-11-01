@@ -114,7 +114,7 @@
       the database port is never opened to everyone (no /0).
     quiet: true
 
-# The drop-in belongs to the firewall layout of the base role (docs/adr/0009): the role manages it
+# The drop-in belongs to the firewall layout of the base role: the role manages it
 # when /etc/nftables.d exists or mariadb_firewall_manage is true, and checks a new file together
 # with /etc/nftables.conf by nft before it replaces the old one. Both are checked here, before
 # anything changes, instead of failing later with an unclear validate error.

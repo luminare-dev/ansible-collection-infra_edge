@@ -1,4 +1,4 @@
-# restic from the distribution (default), or the pinned upstream release (docs/adr/0018). The
+# restic from the distribution (default), or the pinned upstream release. The
 # package method installs /usr/bin/restic without the recommended packages (fuse and the HTML
 # documentation). The binary method installs /usr/local/bin/restic and leaves the package alone.
 

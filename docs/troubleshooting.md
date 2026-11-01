@@ -293,4 +293,4 @@ sudo apt-get install docker.io
 
 Search the issues, then ask in the project's
 [Discussions](https://github.com/luminare-dev/ansible-collection-infra_edge/discussions). Never
-post secrets, keys, IP addresses, hostnames or player data; redact logs before you paste them.
+post secrets, keys, IP addresses, hostnames or personal data; redact logs before you paste them.

@@ -3,8 +3,7 @@
 # does not install the galaxy.yml dependencies from Ansible Galaxy.
 profile: production
 # ansible-lint 26.10.1 knows ansible-core 2.15 to 2.19 as supported (meta-runtime rule); this
-# collection requires 2.20 or later and is tested with 2.20 and 2.21 (meta/runtime.yml,
-# docs/adr/0010).
+# collection requires 2.20 or later and is tested with 2.20 and 2.21 (meta/runtime.yml).
 supported_ansible_also:
   - "2.20."
   - "2.21."

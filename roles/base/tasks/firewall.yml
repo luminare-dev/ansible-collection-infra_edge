@@ -1,6 +1,6 @@
 # nftables: base owns /etc/nftables.conf (input and forward policy drop, output accept). Its last
 # line includes /etc/nftables.d/*.nft, where other roles add "add rule inet filter input ... accept"
-# lines in <NN>-<role>.nft files (docs/adr/0009). The file is checked with "nft -c" before it is
+# lines in <NN>-<role>.nft files. The file is checked with "nft -c" before it is
 # written. Loading it is skipped in Molecule (tag molecule-notest): a container cannot prove kernel
 # firewall behaviour.
 
