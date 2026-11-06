@@ -3,7 +3,7 @@
 
 # Installation: the distribution's package (restic 0.18 on Debian 13, 0.16 on Ubuntu 24.04), or
 # the pinned upstream release, checked against the SHA-256 per architecture (the "SHA256SUMS" file
-# of the GitHub release, files restic_<version>_linux_<arch>.bz2; docs/adr/0018).
+# of the GitHub release, files restic_<version>_linux_<arch>.bz2).
 restic_backup_install_method: package
 restic_backup_version: "0.19.1"
 restic_backup_binary_sha256:

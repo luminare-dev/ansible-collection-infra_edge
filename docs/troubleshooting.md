@@ -131,7 +131,7 @@ Cloudflare's edge and gives up after 30 seconds: the token is wrong or was rotat
 port 7844 is blocked.
 
 **Fix:** read the reason with `journalctl -u cloudflared -n 50` on the host, then follow
-"Tunnel connector down or not connected" in the [runbook](runbook.md).
+"Tunnel connector down" in the [runbook](runbook.md).
 
 ## The nginx role stops with "Every item of nginx_sites needs a unique name"
 
@@ -293,4 +293,4 @@ sudo apt-get install docker.io
 
 Search the issues, then ask in the project's
 [Discussions](https://github.com/luminare-dev/ansible-collection-infra_edge/discussions). Never
-post secrets, keys, IP addresses, hostnames or player data; redact logs before you paste them.
+post secrets, keys, IP addresses, hostnames or personal data; redact logs before you paste them.

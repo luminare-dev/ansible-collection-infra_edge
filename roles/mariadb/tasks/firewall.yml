@@ -1,4 +1,4 @@
-# Port 3306 for the application hosts in the firewall layout of the base role (docs/adr/0009).
+# Port 3306 for the application hosts in the firewall layout of the base role.
 # Without application hosts no port needs to be opened and the drop-in is removed.
 # mariadb_firewall_write (assert.yml): /etc/nftables.d exists or mariadb_firewall_manage is true;
 # otherwise the role leaves the firewall alone (no base firewall on this host).

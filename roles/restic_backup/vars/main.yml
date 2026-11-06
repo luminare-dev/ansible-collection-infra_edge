@@ -9,7 +9,7 @@ restic_backup_architectures:
   x86_64: amd64
   aarch64: arm64
 
-# Installation (docs/adr/0018). The package installs /usr/bin/restic; the upstream binary goes to
+# Installation. The package installs /usr/bin/restic; the upstream binary goes to
 # /usr/local/bin/restic and leaves a package that is already installed alone. Everything else
 # runs restic through the wrapper, which names the binary of the chosen method.
 restic_backup_package: restic
@@ -21,7 +21,7 @@ restic_backup_release_url: https://github.com/restic/restic/releases/download
 # The release file is downloaded here, decompressed to restic_backup_upstream_binary and removed.
 restic_backup_download_dir: /var/cache/luminare-restic-download
 
-# Settings of the repository: root-only files read by the wrapper (docs/adr/0019).
+# Settings of the repository: root-only files read by the wrapper.
 restic_backup_config_dir: /etc/restic
 restic_backup_env_file: /etc/restic/env
 restic_backup_password_file: /etc/restic/password
@@ -30,7 +30,7 @@ restic_backup_cache_dir: /var/cache/restic-backup
 # Variables that the role sets itself, so restic_backup_env may not set them.
 restic_backup_reserved_env_pattern: '^RESTIC_(REPOSITORY|PASSWORD|CACHE_DIR)'
 
-# Scripts, units and the status of the last run (docs/adr/0019, docs/adr/0020)
+# Scripts, units and the status of the last run
 restic_backup_wrapper: /usr/local/sbin/restic-env
 restic_backup_script: /usr/local/sbin/restic-backup
 restic_backup_restore_test_script: /usr/local/sbin/restic-restore-test

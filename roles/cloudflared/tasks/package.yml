@@ -1,8 +1,7 @@
 # cloudflared comes from Cloudflare's apt repository, whose index lists only the newest version,
 # so "apt-get install cloudflared=<version>" fails as soon as a newer one is out. The role
 # therefore installs the package file of the pinned version from the repository's pool, checks
-# its SHA-256 against cloudflared_deb_sha256, and an apt pin keeps apt from replacing it
-# (docs/adr/0011).
+# its SHA-256 against cloudflared_deb_sha256, and an apt pin keeps apt from replacing it.
 
 - name: Pin the cloudflared version for apt
   ansible.builtin.template:

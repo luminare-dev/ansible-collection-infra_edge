@@ -1,6 +1,5 @@
 # Molecule test image for every role scenario: systemd as PID 1 plus what Ansible needs on a
-# managed host. The base images are pinned by digest (Dependabot "docker" updates the digests;
-# docs/adr/0006). The Molecule docker driver renders this file once per platform, and
+# managed host. The base images are pinned by digest (Dependabot "docker" updates the digests). The Molecule docker driver renders this file once per platform, and
 # .config/molecule/config.yml sets "image" to one of the two names below.
 {% if item.image == 'ie-molecule-debian13' %}
 FROM debian:trixie@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308

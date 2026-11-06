@@ -1,15 +1,9 @@
 # Example inventory for the edge playbook
 
-A complete inventory for [`luminare.infra_edge.edge`](../../playbooks/edge.yml), the playbook
-that sets up one edge host with the roles of the collection, here with the backups switched on.
-The Molecule scenario `extensions/molecule/edge` runs the playbook with these `group_vars` on
-Debian 13 and Ubuntu 24.04 on every pull request. It adds or replaces only these values: the SSH
-keys (with a test key) and the values of the vault file, the tunnel token (a synthetic one) and a
-test-only edge address for the connector (`cloudflared_extra_args`), the host's private address
-and backup repository from `inventory.yml` (which Molecule does not read; a local folder in place
-of the backup bucket), and a small InnoDB buffer pool for the container
-(`mariadb_innodb_buffer_pool_size: 128M`). Names use `example.com` and addresses the
-documentation ranges, so nothing points to a real host.
+A complete inventory for [`luminare.infra_edge.edge`](../../playbooks/edge.yml), with the backups
+switched on. The Molecule scenario `extensions/molecule/edge` runs the playbook with these
+`group_vars`, so the example stays working. Names use `example.com` and addresses the
+documentation ranges.
 
 | File | What it holds |
 |---|---|

@@ -1,5 +1,5 @@
 # The settings of the repository live in root-only files under /etc/restic, which the wrapper
-# /usr/local/sbin/restic-env reads for every restic run (docs/adr/0019). Before they are written,
+# /usr/local/sbin/restic-env reads for every restic run. Before they are written,
 # the new settings are tried against the repository: a wrong password, wrong credentials or an
 # unreachable backend stop the role and leave the old settings, and with them the running backups,
 # alone. The repository is initialised only when restic reports that it does not exist; restic

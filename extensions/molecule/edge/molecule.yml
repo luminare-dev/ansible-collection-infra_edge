@@ -1,22 +1,7 @@
-# Molecule scenario "edge": the playbook luminare.infra_edge.edge (playbooks/edge.yml) with the
-# values of the example inventory (examples/edge/group_vars/, linked below), so the four roles
-# run together as one edge host would get them. Run it from the repository root, where Molecule
-# finds the collection's scenarios in extensions/molecule/:
-#   molecule test --scenario-name edge                                    # both platforms
-#   molecule test --scenario-name edge --platform-name ie-edge-debian13   # one, as in CI
-# The driver, the provisioner settings and the test sequence come from .config/molecule/config.yml.
-# Only the platforms are repeated here: the same containers as the role scenarios, named
-# ie-edge-<platform>, in the inventory group "edge" of the playbook, with the Dockerfile path
-# seen from this folder (tests/test_collection.py keeps both lists equal).
-#
-# prepare.yml adds what the example inventory assumes around the host: the private network
-# 192.0.2.0/24 with the application host and a network namespace "lan" for the hosts outside,
-# a test application behind the nginx site, and a drop-in that keeps the tunnel connector away
-# from every network. converge.yml sets the values that the operator would provide (SSH keys,
-# vault values, the tunnel token, a local backup repository) and imports the playbook, with
-# restic_backup switched on as in the example. verify.yml checks the roles together: the composed
-# firewall from the other hosts, the listeners, a request through nginx to the application and
-# its database, the connector, and a backup of the database dumps with a restore test.
+# Molecule scenario "edge": the edge playbook with the example inventory's group_vars.
+#   molecule test --scenario-name edge [--platform-name ie-edge-debian13]
+# Driver and sequence come from .config/molecule/config.yml; only the platforms are repeated here
+# (tests/test_collection.py keeps both lists equal).
 dependency:
   name: galaxy
   options:

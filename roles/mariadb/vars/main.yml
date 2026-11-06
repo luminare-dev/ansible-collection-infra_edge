@@ -15,7 +15,7 @@ mariadb_log_dir: /var/log/mysql
 mariadb_slow_query_log_file: /var/log/mysql/mariadb-slow.log
 mariadb_port: 3306
 
-# Nightly dumps (docs/adr/0016)
+# Nightly dumps
 mariadb_dump_script: /usr/local/sbin/mariadb-dump-all
 mariadb_dump_service_file: /etc/systemd/system/mariadb-dump.service
 mariadb_dump_timer_file: /etc/systemd/system/mariadb-dump.timer
@@ -26,7 +26,7 @@ mariadb_reserved_databases: [information_schema, mysql, performance_schema, sys,
 # Accounts of the packages: root (unix_socket), mysql (unix_socket) and mariadb.sys.
 mariadb_reserved_users: [root, mysql, mariadb.sys]
 
-# Firewall drop-in of the base role's layout (docs/adr/0009): number 30 is the database's.
+# Firewall drop-in of the base role's layout: number 30 is the database's.
 mariadb_firewall_dropin_dir: /etc/nftables.d
 mariadb_firewall_dropin: /etc/nftables.d/30-mariadb.nft
 mariadb_firewall_ruleset: /etc/nftables.conf

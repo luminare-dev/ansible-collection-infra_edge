@@ -1,4 +1,4 @@
-# Test fixture: the firewall layout of luminare.infra_edge.base (docs/adr/0009) without its SSH
+# Test fixture: the firewall layout of luminare.infra_edge.base without its SSH
 # rules: /etc/nftables.conf with input policy drop and the include of /etc/nftables.d/*.nft as its
 # last line, loaded by nftables.service in the instance's own network namespace. The directory
 # /etc/nftables.d is not created here: converge.yml keeps the default mariadb_firewall_manage

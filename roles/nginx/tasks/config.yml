@@ -1,4 +1,4 @@
-# The role owns /etc/nginx/nginx.conf (docs/adr/0013): the package's file already sets gzip and a
+# The role owns /etc/nginx/nginx.conf: the package's file already sets gzip and a
 # combined access log at the http level, which a conf.d file cannot turn off or replace, and the
 # stream relays need the main context. The site files keep Debian's sites-available and
 # sites-enabled layout. No template is checked on its own (nginx -t needs the whole

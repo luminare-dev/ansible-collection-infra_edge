@@ -6,7 +6,7 @@ nginx_supported_platforms:
   Ubuntu: ["24"]
 
 # Debian's layout of /etc/nginx, which the role keeps: the role owns nginx.conf and writes one
-# file per site into sites-available, enabled by a symlink in sites-enabled (docs/adr/0013).
+# file per site into sites-available, enabled by a symlink in sites-enabled.
 nginx_conf_file: /etc/nginx/nginx.conf
 nginx_sites_available_dir: /etc/nginx/sites-available
 nginx_sites_enabled_dir: /etc/nginx/sites-enabled
@@ -19,7 +19,7 @@ nginx_site_marker: "# Site of luminare.infra_edge.nginx"
 # The dynamic stream module; Debian and Ubuntu enable it in /etc/nginx/modules-enabled.
 nginx_stream_package: libnginx-mod-stream
 
-# Firewall drop-in of the base role's layout (docs/adr/0009): number 20 is the web server's.
+# Firewall drop-in of the base role's layout: number 20 is the web server's.
 nginx_firewall_dropin_dir: /etc/nftables.d
 nginx_firewall_dropin: /etc/nftables.d/20-nginx.nft
 nginx_firewall_ruleset: /etc/nftables.conf

@@ -1,5 +1,5 @@
 # The backup script and its sandboxed oneshot service with a nightly timer, the check service
-# with a monthly timer, and the restore test (docs/adr/0019, docs/adr/0020). The files are always
+# with a monthly timer, and the restore test. The files are always
 # written, so both services can be started by hand; restic_backup_timers_enabled switches the
 # timers.
 

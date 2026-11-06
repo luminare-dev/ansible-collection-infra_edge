@@ -1,15 +1,5 @@
-# Reusable release: release-please keeps a release pull request open; merging it creates a draft
-# GitHub release and the vX.Y.Z tag. The same run then builds the source archive, writes
-# SHA256SUMS, attests the archive (SLSA build provenance), attaches both files and publishes the
-# release. Everything happens in one run because a tag or release created with GITHUB_TOKEN
-# does not trigger other workflows.
-#
-# In an Ansible collection (a galaxy.yml at the root) the build job also builds the collection
-# tarball with "ansible-galaxy collection build"; SHA256SUMS and the attestation then cover both
-# archives. Nothing is uploaded to a package index.
-#
-# The release is created as a draft (release-please-config.json: draft + force-tag-creation) and
-# published only after every file is attached, so it also works with immutable releases turned on.
+# release-please keeps a release PR open; merging it creates a draft release that this run fills
+# with the archives, SHA256SUMS and an attestation, then publishes.
 name: reusable-release
 
 on:
